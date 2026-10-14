@@ -204,3 +204,17 @@ test('an Auth that signs requests sees the whole URL, query and all', async () =
   assert.equal(sent[0]!.headers['x-signed'], `${baseUrl}/things?limit=2`);
   assert.equal(sent[0]!.url, `${baseUrl}/things?limit=2`);
 });
+
+test('an operation that needs no credentials is sent without them, and never refreshes them', async () => {
+  let refreshed = 0;
+  const auth = Auth.make({
+    authenticate: (request) => Effect.succeed(HttpClientRequest.bearerToken(request, 'one')),
+    refresh: Effect.sync(() => void refreshed++),
+  });
+  const { sent, client } = mock(json(401, {}));
+  const transport = new EffectTransport(client, { baseUrl, auth });
+  await Effect.runPromise(Effect.flip(transport.send(list, {}, undefined, { auth: false })));
+  assert.equal(sent[0]!.headers['authorization'], undefined);
+  assert.equal(refreshed, 0);
+  assert.equal(sent.length, 1);
+});

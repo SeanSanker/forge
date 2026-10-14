@@ -83,19 +83,29 @@ fn main() -> ExitCode {
 fn run(args: Args) -> Result<(), Err> {
     match args.target {
         Target::Ts => {
-            let forge = read(&args.spec)?;
+            let forge: Forge = parse(&args.spec, &read(&args.spec)?)?;
             forge::write(&args.out, forge::run(&forge, &ts::Generator)?)
         }
         Target::Effect => {
-            let forge = read(&args.spec)?;
-            let generator = effect::Generator { name: args.name };
+            // forge's model doesn't keep the document's security, which the
+            // effect target reads from the document itself.
+            let json = read(&args.spec)?;
+            let forge: Forge = parse(&args.spec, &json)?;
+            let security = effect::Security::read(&parse(&args.spec, &json)?);
+            let generator = effect::Generator {
+                name: args.name,
+                security,
+            };
             forge::write(&args.out, forge::run(&forge, &generator)?)
         }
         #[cfg(feature = "wasm")]
         Target::Wasm(path) => {
             // Compiling the plugin and reading the document are both slow,
             // so they run at the same time.
-            let (plugin, forge) = rayon::join(|| forge::wasm::WasmPlugin::from_file(&path), || read(&args.spec));
+            let (plugin, forge) = rayon::join(
+                || forge::wasm::WasmPlugin::from_file(&path),
+                || parse(&args.spec, &read(&args.spec)?),
+            );
             let (plugin, forge) = (plugin?, forge?);
             forge::write(&args.out, forge::run(&forge, &plugin)?)
         }
@@ -103,18 +113,22 @@ fn run(args: Args) -> Result<(), Err> {
 }
 
 /// Reads the document at `path`, or from standard input when `path` is `-`.
-fn read(path: &Path) -> Result<Forge, Err> {
-    let parse = || -> Result<Forge, Err> {
-        let json = if path == Path::new("-") {
+fn read(path: &Path) -> Result<Vec<u8>, Err> {
+    let read = || -> io::Result<Vec<u8>> {
+        if path == Path::new("-") {
             let mut json = Vec::new();
             io::stdin().read_to_end(&mut json)?;
-            json
+            Ok(json)
         } else {
-            fs::read(path)?
-        };
-        Ok(serde_json::from_slice(&json)?)
+            fs::read(path)
+        }
     };
-    parse().map_err(|err| format!("{}: {err}", path.display()).into())
+    read().map_err(|err| format!("{}: {err}", path.display()).into())
+}
+
+/// Parses the document read from `path`, as forge's model or as JSON.
+fn parse<T: serde::de::DeserializeOwned>(path: &Path, json: &[u8]) -> Result<T, Err> {
+    serde_json::from_slice(json).map_err(|err| format!("{}: {err}", path.display()).into())
 }
 
 #[cfg(test)]

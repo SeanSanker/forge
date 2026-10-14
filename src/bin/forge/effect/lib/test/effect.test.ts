@@ -273,3 +273,19 @@ test('an ApiError is easy to make, as in a fake client, with the type of its rea
   const typed: ClientError<Reason<'NotFound', { readonly errorCode: number }> | Unexpected> = error;
   assert.deepEqual(typed._tag === 'ApiError' && typed.details, { errorCode: 7 });
 });
+
+test("the API's server URL is the baseUrl when the options have none", async () => {
+  const { sent, client } = mock(json(200, {}), json(200, {}));
+  await Effect.runPromise(new EffectTransport(client, {}, 'https://server.test/v4').send(createThing, {}, undefined));
+  await Effect.runPromise(
+    new EffectTransport(client, { baseUrl: 'https://other.test' }, 'https://server.test/v4').send(
+      createThing,
+      {},
+      undefined,
+    ),
+  );
+  assert.deepEqual(
+    sent.map((s) => s.url),
+    ['https://server.test/v4/things', 'https://other.test/things'],
+  );
+});

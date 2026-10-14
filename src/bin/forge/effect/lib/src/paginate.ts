@@ -20,7 +20,7 @@
 
 import { Effect, Option, Stream } from 'effect';
 
-import type { ClientError, EffectTransport, RequestOptions } from './effect.js';
+import type { ClientError, EffectTransport, RequestOptions, SendOptions } from './effect.js';
 import type { Operation } from './index.js';
 
 /**
@@ -68,10 +68,16 @@ export function paginate<I, E extends ClientError = ClientError>(
   pagination: Pagination,
   request: object | undefined,
   options: RequestOptions | undefined,
+  sending?: SendOptions,
 ): Stream.Stream<I, E> {
   const fields = (request ?? {}) as Fields;
   const fetch = (param: string, value: unknown) =>
-    transport.send<unknown, E>(operation, value === undefined ? fields : { ...fields, [param]: value }, options);
+    transport.send<unknown, E>(
+      operation,
+      value === undefined ? fields : { ...fields, [param]: value },
+      options,
+      sending,
+    );
 
   if (pagination.kind === 'cursor') {
     return Stream.paginate(fields[pagination.cursor], (cursor: unknown) =>

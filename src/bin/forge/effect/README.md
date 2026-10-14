@@ -130,6 +130,30 @@ credentials, which Effect then redacts while the request is sent, in
 addition to `authorization` and `x-api-key`. A key in the query string is
 part of the URL, which tracing records.
 
+### From the document
+
+forge's model doesn't keep a document's security, so the effect target reads
+it from the document itself:
+
+- **`Security`**, in the entry point, has a function for each security scheme
+  the SDK can authenticate with (HTTP bearer and basic, API keys in a header
+  or the query, OAuth2 client credentials), with the scheme's header name or
+  token URL filled in. It is named as Fern's `x-fern-bearer` or
+  `x-fern-header` names it, or after the scheme.
+- **`Api.layerConfig()`** reads the credentials of the scheme the document asks
+  for first from the config (environment variables by default) that Fern's
+  `env` names, when it names them.
+- **An operation whose requirements are all empty**, such as `security: []`,
+  sends no credentials.
+- **The `baseUrl`** defaults to the document's first server.
+
+```ts
+// Cloudflare's document asks for api_token, a bearer token in CLOUDFLARE_API_TOKEN.
+const CloudflareLive = Api.layerConfig().pipe(Layer.provide(FetchHttpClient.layer));
+// or
+const CloudflareLive = Api.layer({ auth: Security.apiToken(token) }).pipe(Layer.provide(FetchHttpClient.layer));
+```
+
 ## Pagination
 
 A method with Fern's

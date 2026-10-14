@@ -263,3 +263,52 @@ fn effect_name() {
     );
     std::fs::remove_dir_all(&out).unwrap();
 }
+
+/// A document with security schemes, whose first requirement is the bearer
+/// token, and an operation that needs no credentials.
+const SECURED: &str = r#"{
+  "openapi": "3.0.3", "info": {"title": "Shop", "version": "1"},
+  "servers": [{"url": "https://shop.test/v1"}],
+  "security": [{"bearer": []}],
+  "components": {"securitySchemes": {
+    "bearer": {"type": "http", "scheme": "bearer", "x-fern-bearer": {"name": "apiToken", "env": "SHOP_TOKEN"}},
+    "key": {"type": "apiKey", "in": "query", "name": "api_key"},
+    "oidc": {"type": "openIdConnect", "openIdConnectUrl": "https://shop.test/.well-known"}
+  }},
+  "paths": {
+    "/items": {"get": {"x-fern-sdk-group-name": "items", "x-fern-sdk-method-name": "list",
+      "security": [], "responses": {"200": {"description": "ok"}}}},
+    "/orders": {"get": {"x-fern-sdk-group-name": "orders", "x-fern-sdk-method-name": "list",
+      "responses": {"200": {"description": "ok"}}}}
+  }
+}"#;
+
+#[test]
+fn effect_security() {
+    let out = std::env::temp_dir().join(format!("forge-cli-effect-security-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&out);
+    let result = forge(&["-", "--target", "effect", "--out", out.to_str().unwrap()], SECURED);
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let read = |name: &str| std::fs::read_to_string(out.join(name)).unwrap();
+    let root = read("effect.ts");
+    for snippet in [
+        "apiToken: (token: Secret): Auth => bearer(token),",
+        r#"key: (key: Secret): Auth => apiKey(key, { query: "api_key" }),"#,
+        r#"new EffectTransport(client, options, "https://shop.test/v1")"#,
+        r#"Api.layer(Effect.map(Config.Redacted("SHOP_TOKEN"), (secret) => ({ ...options, auth: Security.apiToken(secret) })));"#,
+    ] {
+        assert!(root.contains(snippet), "effect.ts has no {snippet:?}:\n{root}");
+    }
+    assert!(!root.contains("oidc"), "{root}");
+    let items = read("items/effect.ts");
+    assert!(
+        items.contains("transport.send(ListOperation, request, options, { auth: false })"),
+        "{items}"
+    );
+    let orders = read("orders/effect.ts");
+    assert!(
+        orders.contains("transport.send(ListOperation, request, options),"),
+        "{orders}"
+    );
+    std::fs::remove_dir_all(&out).unwrap();
+}

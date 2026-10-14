@@ -20,11 +20,18 @@ use crate::ts::client::{
 use crate::ts::types::{Prec, all_optional, doc, identifier, js_string, kept, key, typ};
 use crate::ts::{self, File, Node, RUNTIME_DIR};
 
+mod security;
+
+pub use security::Security;
+use security::{Kind as SchemeKind, Scheme};
+
 /// Generates a TypeScript SDK with an Effect client.
 pub struct Generator {
     /// The name of the SDK's package, such as `@acme/pets-sdk`, which keys
     /// its Api service. Without it, the API's title does.
     pub name: Option<String>,
+    /// The security of the document, which forge's model doesn't keep.
+    pub security: Security,
 }
 
 impl Plugin for Generator {
@@ -34,7 +41,11 @@ impl Plugin for Generator {
     /// effect.ts, and the Effect runtime.
     fn generate(&self, forge: &Forge) -> Result<impl Iterator<Item = File>, Err> {
         let mut files: Vec<File> = ts::Generator.generate(forge)?.collect();
-        files.push(File::Ts(effect(Node::Root(forge), self.name.as_deref())?));
+        files.push(File::Ts(effect(
+            Node::Root(forge),
+            self.name.as_deref(),
+            &self.security,
+        )?));
         files.extend(RUNTIME.iter().map(|&(path, source)| File::Runtime {
             path: RUNTIME_DIR.sub(path).as_str().to_owned(),
             content: format!("{PREAMBLE}{source}"),
@@ -45,7 +56,11 @@ impl Plugin for Generator {
     /// Returns the files of the TypeScript SDK's group, and its effect.ts.
     fn generate_group(&self, group: Group<'_>) -> Result<impl Iterator<Item = File>, Err> {
         let mut files: Vec<File> = ts::Generator.generate_group(group)?.collect();
-        files.push(File::Ts(effect(Node::Group(group), self.name.as_deref())?));
+        files.push(File::Ts(effect(
+            Node::Group(group),
+            self.name.as_deref(),
+            &self.security,
+        )?));
         Ok(files.into_iter())
     }
 }
@@ -60,6 +75,7 @@ const RUNTIME: [(&str, &str); 3] = [
 /// The modules of the Effect runtime, and of Effect.
 const EFFECT_RUNTIME: Module = Module::new("_/effect.ts");
 const PAGINATE: Module = Module::new("_/paginate.ts");
+const AUTH: Module = Module::new("_/auth.ts");
 const EFFECT: Module = Module::new("effect");
 const HTTP: Module = Module::new("effect/http");
 
@@ -68,6 +84,8 @@ struct Entry<'f> {
     method: Method<'f>,
     request: Request<'f>,
     pagination: Option<Pagination<'f>>,
+    /// Whether the method needs no credentials.
+    public: bool,
 }
 
 /// How a method pages, from its `x-fern-pagination`, with the TypeScript
@@ -96,7 +114,7 @@ enum Kind {
 /// Returns the effect.ts of `node`: its Client and bind, then how each
 /// paginated method pages. The root's also declares Api, and exports what
 /// the SDK's users need with it.
-fn effect(node: Node<'_>, name: Option<&str>) -> Result<TsFile, Err> {
+fn effect(node: Node<'_>, name: Option<&str>, security: &Security) -> Result<TsFile, Err> {
     let groups = node.children();
     let group_names: HashMap<String, Group<'_>> = groups.iter().map(|&sub| (group_name(sub), sub)).collect();
     let entries: Vec<Entry<'_>> = node
@@ -106,10 +124,12 @@ fn effect(node: Node<'_>, name: Option<&str>) -> Result<TsFile, Err> {
         .map(|m| {
             let request = Request::new(m);
             let pagination = pagination(m, &request)?;
+            let operation = (m.http_method().as_str().to_owned(), m.path().to_owned());
             Ok(Entry {
                 method: m,
                 request,
                 pagination,
+                public: security.public.contains(&operation),
             })
         })
         .collect::<Result<_, Err>>()?;
@@ -140,7 +160,7 @@ fn effect(node: Node<'_>, name: Option<&str>) -> Result<TsFile, Err> {
     }
     if let Node::Root(forge) = node {
         p!(f);
-        api(&mut f, &service_key(forge, name));
+        api(&mut f, &service_key(forge, name), forge, security);
     }
     Ok(f)
 }
@@ -183,7 +203,11 @@ fn client_interface(
     f.indent(|f| {
         for entry in entries {
             let m = entry.method;
-            f.doc(&doc(&method_doc(m), m.is_deprecated()));
+            let mut text = method_doc(m);
+            if entry.public {
+                text.push_str("\n\nIt needs no credentials, and sends none.");
+            }
+            f.doc(&doc(&text, m.is_deprecated()));
             let name = method_name(m);
             let params = frag!(
                 "request",
@@ -253,9 +277,9 @@ fn client_interface(
 /// name share a getter, of the method with the members of the subgroup's
 /// Client.
 fn bind(f: &mut TsFile, entries: &[Entry<'_>], groups: &[Group<'_>], group_names: &HashMap<String, Group<'_>>) {
-    let shared: HashMap<String, Method<'_>> = entries
+    let shared: HashMap<String, &Entry<'_>> = entries
         .iter()
-        .map(|e| (method_name(e.method), e.method))
+        .map(|e| (method_name(e.method), e))
         .filter(|(name, _)| group_names.contains_key(name))
         .collect();
     p!(
@@ -277,8 +301,8 @@ fn bind(f: &mut TsFile, entries: &[Entry<'_>], groups: &[Group<'_>], group_names
         for &sub in groups {
             let name = group_name(sub);
             match shared.get(&name) {
-                Some(&m) => {
-                    let method = js_string(&method_name(m));
+                Some(entry) => {
+                    let method = js_string(&method_name(entry.method));
                     p!(
                         f,
                         "let ",
@@ -299,7 +323,7 @@ fn bind(f: &mut TsFile, entries: &[Entry<'_>], groups: &[Group<'_>], group_names
                 let m = entry.method;
                 let name = method_name(m);
                 if !shared.contains_key(&name) {
-                    p!(f, key(&name), ": (request, options) => ", send(m), ",");
+                    p!(f, key(&name), ": (request, options) => ", send(entry), ",");
                 }
                 if entry.pagination.is_some() {
                     p!(
@@ -311,7 +335,9 @@ fn bind(f: &mut TsFile, entries: &[Entry<'_>], groups: &[Group<'_>], group_names
                         operation_ident(m),
                         ", ",
                         f.ident(pagination_name(m)),
-                        ", request, options),"
+                        ", request, options",
+                        if entry.public { ", { auth: false }" } else { "" },
+                        "),"
                     );
                 }
             }
@@ -319,7 +345,8 @@ fn bind(f: &mut TsFile, entries: &[Entry<'_>], groups: &[Group<'_>], group_names
                 let name = group_name(sub);
                 p!(f, "get ", key(&name), "() {");
                 f.indent(|f| match shared.get(&name) {
-                    Some(&m) => {
+                    Some(entry) => {
+                        let m = entry.method;
                         p!(f, "return (", name, "Client ??= Object.assign(");
                         f.indent(|f| {
                             p!(
@@ -331,7 +358,7 @@ fn bind(f: &mut TsFile, entries: &[Entry<'_>], groups: &[Group<'_>], group_names
                                 "): ",
                                 result(m),
                                 " => ",
-                                send(m),
+                                send(entry),
                                 ","
                             );
                             p!(f, bind_ident(sub), "(transport),");
@@ -383,14 +410,19 @@ fn declare_pagination(f: &mut TsFile, m: Method<'_>, pagination: &Pagination<'_>
     );
 }
 
-/// Declares Api, the root's Client as an Effect service, under `key`.
-fn api(f: &mut TsFile, key: &str) {
+/// Declares Security, an Auth for each security scheme of the API, then
+/// Api, the root's Client as an Effect service, under `key`.
+fn api(f: &mut TsFile, key: &str, forge: &Forge, security: &Security) {
     let effect = EFFECT.ident("Effect");
     let layer = EFFECT.ident("Layer");
     let http_client = HTTP.ident("HttpClient");
     let options = EFFECT_RUNTIME.ident("ClientOptions").ty();
     let api = f.ident("Api");
     let client = f.ident("Client");
+    if !security.schemes.is_empty() {
+        declare_security(f, &security.schemes);
+        p!(f);
+    }
     f.doc(
         "The client of the API, as an Effect service. Each method returns an Effect, and sends with the HttpClient \
          that the client was made with.",
@@ -410,7 +442,16 @@ fn api(f: &mut TsFile, key: &str) {
         ") {"
     );
     f.indent(|f| {
-        f.doc("Makes the client with the HttpClient in context.");
+        let base_url = if forge.base_url.is_empty() {
+            String::new()
+        } else {
+            format!(", {}", js_string(&forge.base_url))
+        };
+        let mut text = "Makes the client with the HttpClient in context.".to_owned();
+        if !forge.base_url.is_empty() {
+            text.push_str(&format!(" Its baseUrl is {} by default.", forge.base_url));
+        }
+        f.doc(&text);
         p!(
             f,
             "static readonly make = (options: ",
@@ -435,7 +476,9 @@ fn api(f: &mut TsFile, key: &str) {
                 f.ident("bind"),
                 "(new ",
                 EFFECT_RUNTIME.ident("EffectTransport"),
-                "(client, options))));"
+                "(client, options",
+                base_url,
+                "))));"
             );
         });
         p!(f);
@@ -471,8 +514,154 @@ fn api(f: &mut TsFile, key: &str) {
                 ".make));"
             );
         });
+        let default = security
+            .default
+            .as_deref()
+            .and_then(|key| security.schemes.iter().find(|scheme| scheme.key == key));
+        if let Some(scheme) = default {
+            layer_config(f, scheme);
+        }
     });
     p!(f, "}");
+}
+
+/// Declares Security: for each security scheme the SDK can authenticate
+/// with, a function that returns its Auth.
+fn declare_security(f: &mut TsFile, schemes: &[Scheme]) {
+    let auth = AUTH.ident("Auth").ty();
+    let secret = AUTH.ident("Secret").ty();
+    f.doc("How requests to the API authenticate, by its security schemes. Pass one as the client's auth.");
+    p!(f, "export const ", f.ident("Security"), " = {");
+    f.indent(|f| {
+        for scheme in schemes {
+            let (summary, params, body): (String, Fragment, Fragment) = match &scheme.kind {
+                SchemeKind::Bearer { .. } => (
+                    "Sends a token as `Authorization: Bearer <token>`.".to_owned(),
+                    frag!("token: ", secret.clone()),
+                    frag!(AUTH.ident("bearer"), "(token)"),
+                ),
+                SchemeKind::Basic { .. } => (
+                    "Sends a username and password as `Authorization: Basic`.".to_owned(),
+                    frag!("username: string, password: ", secret.clone()),
+                    frag!(AUTH.ident("basic"), "(username, password)"),
+                ),
+                SchemeKind::ApiKey { header, name, .. } => {
+                    let (place, text) = if *header {
+                        ("header", "header")
+                    } else {
+                        ("query", "query parameter")
+                    };
+                    (
+                        format!("Sends an API key in the {text} `{name}`."),
+                        frag!("key: ", secret.clone()),
+                        frag!(AUTH.ident("apiKey"), "(key, { ", place, ": ", js_string(name), " })"),
+                    )
+                }
+                SchemeKind::ClientCredentials { token_url } => (
+                    format!("Gets an access token from {token_url} with the OAuth2 client credentials grant."),
+                    frag!(
+                        "options: { readonly clientId: string; readonly clientSecret: ",
+                        secret.clone(),
+                        "; readonly scope?: string }"
+                    ),
+                    frag!(
+                        AUTH.ident("oauth2ClientCredentials"),
+                        "({ tokenUrl: ",
+                        js_string(token_url),
+                        ", ...options })"
+                    ),
+                ),
+            };
+            let mut text = summary;
+            if !scheme.description.trim().is_empty() {
+                text.push_str("\n\n");
+                text.push_str(scheme.description.trim());
+            }
+            f.doc(&text);
+            let result = match scheme.kind {
+                SchemeKind::ClientCredentials { .. } => frag!(
+                    EFFECT.ident("Effect").ty(),
+                    ".Effect<",
+                    auth.clone(),
+                    ", never, ",
+                    HTTP.ident("HttpClient").ty(),
+                    ".HttpClient>"
+                ),
+                _ => frag!(auth.clone()),
+            };
+            p!(f, key(&scheme.name), ": (", params, "): ", result, " => ", body, ",");
+        }
+    });
+    p!(f, "};");
+}
+
+/// Declares layerConfig, which reads the credentials of `scheme`, the one
+/// the API asks for first, from the environment variables its document
+/// names, when it names them all.
+fn layer_config(f: &mut TsFile, scheme: &Scheme) {
+    let config = EFFECT.ident("Config");
+    let (vars, read, args): (Vec<&str>, Fragment, &str) = match &scheme.kind {
+        SchemeKind::Bearer { env: Some(env) } | SchemeKind::ApiKey { env: Some(env), .. } => (
+            vec![env],
+            frag!(config.clone(), ".Redacted(", js_string(env), ")"),
+            "(secret) => ",
+        ),
+        SchemeKind::Basic {
+            username_env: Some(username),
+            password_env: Some(password),
+        } => (
+            vec![username, password],
+            frag!(
+                config.clone(),
+                ".all([",
+                config.clone(),
+                ".String(",
+                js_string(username),
+                "), ",
+                config.clone(),
+                ".Redacted(",
+                js_string(password),
+                ")])"
+            ),
+            "([username, password]) => ",
+        ),
+        _ => return,
+    };
+    let call = match scheme.kind {
+        SchemeKind::Basic { .. } => "(username, password)",
+        _ => "(secret)",
+    };
+    let names: Vec<String> = vars.iter().map(|var| format!("`{var}`")).collect();
+    p!(f);
+    f.doc(&format!(
+        "Returns a layer of the client that authenticates with {}, from the config {}.",
+        scheme.name,
+        names.join(" and ")
+    ));
+    p!(
+        f,
+        "static readonly layerConfig = (options?: Omit<",
+        EFFECT_RUNTIME.ident("ClientOptions").ty(),
+        ", \"auth\">) =>"
+    );
+    f.indent(|f| {
+        p!(
+            f,
+            f.ident("Api"),
+            ".layer(",
+            EFFECT.ident("Effect"),
+            ".map(",
+            read,
+            ", ",
+            args,
+            "({ ...options, auth: ",
+            f.ident("Security"),
+            ".",
+            scheme.name.as_str(),
+            call,
+            " })));"
+        );
+    });
 }
 
 /// Returns the key of the Api service: the name of the SDK's package, or
@@ -704,9 +893,17 @@ fn error_ident(m: Method<'_>) -> Ident {
         .ty()
 }
 
-/// Returns the call that sends the operation of `m`.
-fn send(m: Method<'_>) -> Fragment {
-    frag!("transport.send(", operation_ident(m), ", request, options)")
+/// Returns the call that sends the operation of an entry, with no
+/// credentials when it needs none.
+fn send(entry: &Entry<'_>) -> Fragment {
+    let public = if entry.public { ", { auth: false }" } else { "" };
+    frag!(
+        "transport.send(",
+        operation_ident(entry.method),
+        ", request, options",
+        public,
+        ")"
+    )
 }
 
 fn request_options() -> Ident {

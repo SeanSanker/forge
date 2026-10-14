@@ -42,13 +42,23 @@ export class ApiError<const R extends Reason = Reason> extends Data.TaggedError(
    * `Effect.catchReason('ApiError', 'NotFound', ...)`.
    */
   readonly reason: R;
-  readonly cause?: unknown;
-}> {
   /**
    * The details of the reason: the body decoded as declared, or as text.
    */
-  get details(): R['details'] {
-    return this.reason.details;
+  readonly details: R['details'];
+  readonly cause?: unknown;
+}> {
+  /**
+   * Makes the error of a response, whose details are those of its reason.
+   */
+  constructor(props: {
+    readonly message: string;
+    readonly status: number;
+    readonly response: HttpClientResponse.HttpClientResponse;
+    readonly reason: R;
+    readonly cause?: unknown;
+  }) {
+    super({ ...props, details: props.reason.details });
   }
 }
 
@@ -117,12 +127,14 @@ export function reasonTag(status: string): string {
  */
 export interface ClientOptions {
   /**
-   * The URL the paths of the API are relative to.
+   * The URL the paths of the API are relative to; by default, the URL of
+   * the API's server, when its document gives one.
    */
-  readonly baseUrl: string;
+  readonly baseUrl?: string;
   /**
    * How requests authenticate, such as `Auth.bearer(token)`. Requests have
-   * no credentials without it.
+   * no credentials without it, and operations that need none never send
+   * them.
    */
   readonly auth?: Auth;
   /**
@@ -150,6 +162,17 @@ export interface RequestOptions {
   readonly query?: URLSearchParams;
 }
 
+/**
+ * How the generated clients send an operation.
+ */
+export interface SendOptions {
+  /**
+   * Whether the request has the client's credentials: false for an
+   * operation that needs none. True by default.
+   */
+  readonly auth?: boolean;
+}
+
 type Fields = { [key: string]: unknown };
 
 /**
@@ -162,15 +185,17 @@ export class EffectTransport {
   readonly #baseUrl: string;
 
   /**
-   * Checks the options of a client.
+   * Checks the options of a client. `baseUrl` is used when the options have
+   * none.
    */
-  constructor(client: HttpClient.HttpClient, options: ClientOptions) {
-    if (typeof options?.baseUrl !== 'string' || options.baseUrl === '') {
+  constructor(client: HttpClient.HttpClient, options: ClientOptions, baseUrl?: string) {
+    const url = options?.baseUrl ?? baseUrl;
+    if (typeof url !== 'string' || url === '') {
       throw new TypeError('baseUrl is required');
     }
     this.#client = client;
     this.#options = options;
-    this.#baseUrl = options.baseUrl.replace(/\/+$/, '');
+    this.#baseUrl = url.replace(/\/+$/, '');
   }
 
   /**
@@ -181,14 +206,17 @@ export class EffectTransport {
     operation: Operation,
     request: object | undefined,
     options: RequestOptions | undefined,
+    sending?: SendOptions,
   ): Effect.Effect<T, E> {
-    return Effect.suspend(() => this.#send(operation, (request ?? {}) as Fields, options)) as Effect.Effect<T, E>;
+    const send = () => this.#send(operation, (request ?? {}) as Fields, options, sending?.auth ?? true);
+    return Effect.suspend(send) as Effect.Effect<T, E>;
   }
 
   #send(
     operation: Operation,
     request: Fields,
     options: RequestOptions | undefined,
+    authenticate: boolean,
   ): Effect.Effect<unknown, ClientError> {
     const headers = new Headers({ accept: 'application/json' });
     new Headers(this.#options.headers).forEach((value, key) => {
@@ -209,7 +237,7 @@ export class EffectTransport {
       req = HttpClientRequest.bodyText(req, JSON.stringify(body), contentType);
     }
 
-    return Effect.flatMap(this.#execute(req, operation), (response) =>
+    return Effect.flatMap(this.#execute(req, operation, authenticate), (response) =>
       response.status < 200 || response.status > 299
         ? Effect.flatMap(apiError(operation, response), Effect.fail)
         : decode(operation, response),
@@ -224,12 +252,13 @@ export class EffectTransport {
   #execute(
     request: HttpClientRequest.HttpClientRequest,
     operation: Operation,
+    authenticate: boolean,
   ): Effect.Effect<HttpClientResponse.HttpClientResponse, ClientError> {
     const name = `${operation.method} ${operation.route}`;
     const execute = (req: HttpClientRequest.HttpClientRequest) =>
       this.#client.execute(req).pipe(Effect.provideService(HttpClient.SpanNameGenerator, () => name));
     const auth = this.#options.auth;
-    if (auth === undefined) {
+    if (auth === undefined || !authenticate) {
       return execute(request);
     }
     const attempt = Effect.flatMap(

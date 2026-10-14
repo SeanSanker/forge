@@ -36,7 +36,8 @@ export interface Auth {
   readonly redactedHeaders?: readonly string[];
 }
 
-type Secret = string | Redacted.Redacted<string>;
+/** A secret, which can be Redacted. */
+export type Secret = string | Redacted.Redacted<string>;
 
 const reveal = (secret: Secret): string => (Redacted.isRedacted(secret) ? Redacted.value(secret) : secret);
 
