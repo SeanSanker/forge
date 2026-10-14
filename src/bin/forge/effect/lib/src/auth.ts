@@ -5,11 +5,11 @@
  * transport has built it and before it goes to the `HttpClient`. It can
  * set headers, add query parameters, or sign the request, and it can run
  * Effects to do so, such as fetching a token. One that caches credentials
- * can also `refresh`: after a 401, the transport calls it and sends the
- * request once more.
+ * can also `refresh`: after a 401, the transport calls it with the request
+ * that got the 401 and sends the request once more.
  */
 
-import { Context, Data, Duration, Effect, Exit, Redacted } from 'effect';
+import { Context, Data, Duration, Effect, Exit, Redacted, Semaphore } from 'effect';
 import { HttpClient, HttpClientRequest, HttpClientResponse } from 'effect/http';
 
 /** Credentials could not be got, such as a failed token request. */
@@ -24,10 +24,11 @@ export interface Auth {
     request: HttpClientRequest.HttpClientRequest,
   ) => Effect.Effect<HttpClientRequest.HttpClientRequest, AuthError>;
   /**
-   * Forgets cached credentials after a 401. The transport then sends the
-   * request once more. An Auth without it gets no second try.
+   * Forgets cached credentials after a 401, given the authenticated request
+   * that got it. The transport then sends the request once more. An Auth
+   * without it gets no second try.
    */
-  readonly refresh?: Effect.Effect<void>;
+  readonly refresh?: (request: HttpClientRequest.HttpClientRequest) => Effect.Effect<void>;
   /**
    * Headers that hold credentials, which the transport adds to the names
    * Effect redacts while it sends a request, as in logged requests and
@@ -78,7 +79,8 @@ export interface Token {
 /**
  * Returns an Auth that gets a token with `fetch`, keeps it until it expires
  * or a request gets a 401, and sends it with `apply`: as a bearer token by
- * default. Concurrent requests share one fetch.
+ * default. Concurrent requests share one fetch, and requests that get a 401
+ * at once share one fetch of the next token.
  *
  * Use it for any login that trades credentials for a token: OAuth2, or a
  * username and password for a session.
@@ -107,9 +109,29 @@ export const cachedToken = <R>(options: {
           : Duration.millis(Math.max(0, exit.value.expiresIn * 1000 - skew)),
     );
 
+    // The token each authenticated request was sent with.
+    const sentWith = new WeakMap<HttpClientRequest.HttpClientRequest, Token>();
+    const lock = yield* Semaphore.make(1);
+
     return make({
-      authenticate: (request) => Effect.map(current, ({ token }) => apply(request, reveal(token))),
-      refresh: forget,
+      authenticate: (request) =>
+        Effect.map(current, (token) => {
+          const authenticated = apply(request, reveal(token.token));
+          sentWith.set(authenticated, token);
+          return authenticated;
+        }),
+      // A 401 forgets the token only if it is still the one kept: requests
+      // that were sent with it and got a 401 too then use the next one,
+      // rather than forgetting it in turn.
+      refresh: (request) =>
+        lock.withPermit(
+          Effect.gen(function* () {
+            const kept = yield* Effect.result(current);
+            if (kept._tag === 'Success' && kept.success === sentWith.get(request)) {
+              yield* forget;
+            }
+          }),
+        ),
     });
   });
 

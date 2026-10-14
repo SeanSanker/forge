@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { Context, Effect, Redacted } from 'effect';
-import { type HttpClient, HttpClientRequest } from 'effect/http';
+import { HttpClient, HttpClientRequest } from 'effect/http';
 
 import * as Auth from '../src/auth.js';
 import { EffectTransport } from '../src/effect.js';
@@ -79,6 +79,33 @@ test('cachedToken fetches once for concurrent requests', async () => {
     ),
   );
   assert.equal(fetches, 1);
+});
+
+test('cachedToken fetches one new token for requests that get a 401 at once', async () => {
+  let fetches = 0;
+  const auth = await Effect.runPromise(
+    Auth.cachedToken({ fetch: Effect.sync(() => ({ token: `t${++fetches}` })).pipe(Effect.delay(5)) }),
+  );
+  // The API has revoked t1. The first 401 comes back at once, and the
+  // others once t2 has been fetched.
+  const { sent, client: answer } = mockWith((request) =>
+    request.headers['authorization'] === 'Bearer t1' ? json(401, {}) : ok(),
+  );
+  let revoked = 0;
+  const client = HttpClient.make((request) =>
+    answer
+      .execute(request)
+      .pipe(Effect.delay(request.headers['authorization'] === 'Bearer t1' && revoked++ > 0 ? 20 : 0)),
+  );
+  const transport = new EffectTransport(client, { baseUrl, auth });
+  await Effect.runPromise(
+    Effect.all(
+      [1, 2, 3, 4].map(() => transport.send(list, {}, undefined)),
+      { concurrency: 'unbounded' },
+    ),
+  );
+  assert.equal(fetches, 2);
+  assert.equal(sent.filter((s) => s.headers['authorization'] === 'Bearer t2').length, 4);
 });
 
 test('cachedToken can send the token as it likes', async () => {
@@ -209,7 +236,7 @@ test('an operation that needs no credentials is sent without them, and never ref
   let refreshed = 0;
   const auth = Auth.make({
     authenticate: (request) => Effect.succeed(HttpClientRequest.bearerToken(request, 'one')),
-    refresh: Effect.sync(() => void refreshed++),
+    refresh: () => Effect.sync(() => void refreshed++),
   });
   const { sent, client } = mock(json(401, {}));
   const transport = new EffectTransport(client, { baseUrl, auth });

@@ -125,6 +125,11 @@ header of the same name, where the Promise client lets those headers win.
 | `Auth.cachedToken({ fetch, apply? })`                                        | the same, for any login that trades credentials for a token                 |
 | `Auth.make({ authenticate, refresh?, redactedHeaders? })`                    | anything else, such as request signing                                      |
 
+An `Auth` that caches credentials can `refresh` after a 401: the transport
+passes it the request that got the 401, then sends the request once more.
+`cachedToken` forgets its token only if it is still the one that request
+was sent with, so requests that get a 401 at once share one new token.
+
 Secrets can be `Redacted`. An `Auth` can name the headers that hold its
 credentials, which Effect then redacts while the request is sent, in
 addition to `authorization` and `x-api-key`. A key in the query string is

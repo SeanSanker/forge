@@ -291,15 +291,17 @@ export class EffectTransport {
     if (auth !== undefined) {
       const attempt = Effect.flatMap(
         Effect.suspend(() => auth.authenticate(request)),
-        execute,
+        (authenticated) => Effect.map(execute(authenticated), (response) => [authenticated, response] as const),
       );
       const refresh = auth.refresh;
-      sent =
-        refresh === undefined
-          ? attempt
-          : Effect.flatMap(attempt, (response) =>
-              response.status === 401 ? Effect.andThen(refresh, attempt) : Effect.succeed(response),
-            );
+      sent = Effect.flatMap(attempt, ([authenticated, response]) =>
+        refresh !== undefined && response.status === 401
+          ? Effect.andThen(
+              refresh(authenticated),
+              Effect.map(attempt, ([, again]) => again),
+            )
+          : Effect.succeed(response),
+      );
     }
     const retry = this.#options.retry;
     if (retry !== undefined && retry !== false && safeToRepeat(request)) {

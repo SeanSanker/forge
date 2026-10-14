@@ -132,10 +132,11 @@ test('after a 401, an Auth that can refresh does, and the request is sent once m
   let current = 'one';
   const auth = make({
     authenticate: (request) => Effect.sync(() => HttpClientRequest.setHeader(request, 'x-key', current)),
-    refresh: Effect.sync(() => {
-      refreshed++;
-      current = 'two';
-    }),
+    refresh: () =>
+      Effect.sync(() => {
+        refreshed++;
+        current = 'two';
+      }),
   });
   const { sent, effect } = send(createThing, {}, [json(401, {}), json(200, { ok: true })], { ...base, auth });
 
@@ -148,7 +149,7 @@ test('after a 401, an Auth that can refresh does, and the request is sent once m
 });
 
 test('a second 401 after a refresh is an ApiError, with no third try', async () => {
-  const auth = make({ authenticate: Effect.succeed, refresh: Effect.void });
+  const auth = make({ authenticate: Effect.succeed, refresh: () => Effect.void });
   const { sent, effect } = send(createThing, {}, [json(401, {}), json(401, { message: 'still no' })], {
     ...base,
     auth,
