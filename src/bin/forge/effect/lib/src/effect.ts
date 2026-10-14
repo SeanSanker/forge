@@ -29,7 +29,7 @@ import type { Codec, Operation } from './index.js';
  * An error response from the API, or a success response whose body is not
  * valid JSON. The fields are those of the Promise client's `ApiError`.
  */
-export class ApiError extends Data.TaggedError('ApiError')<{
+export class ApiError<const R extends Reason = Reason> extends Data.TaggedError('ApiError')<{
   readonly message: string;
   readonly status: number;
   /**
@@ -37,18 +37,80 @@ export class ApiError extends Data.TaggedError('ApiError')<{
    */
   readonly response: HttpClientResponse.HttpClientResponse;
   /**
-   * The body decoded as the error the API declares for the status, or the
-   * body as text when it declares none or the body does not parse, or
-   * undefined when the body is empty.
+   * Which error response this is: one the operation declares, with its
+   * body decoded, or `Unexpected`. Handle one with
+   * `Effect.catchReason('ApiError', 'NotFound', ...)`.
    */
-  readonly details: unknown;
+  readonly reason: R;
   readonly cause?: unknown;
-}> {}
+}> {
+  /**
+   * The details of the reason: the body decoded as declared, or as text.
+   */
+  get details(): R['details'] {
+    return this.reason.details;
+  }
+}
 
 /**
- * What a call of an Effect client fails with.
+ * Why a call failed with an ApiError. A declared error response is named
+ * after its status, as `reasonTag` names it, and has its body, decoded as
+ * the operation declares it, as details.
  */
-export type ClientError = ApiError | AuthError | HttpClientError.HttpClientError;
+export interface Reason<Tag extends string = string, Details = unknown> {
+  readonly _tag: Tag;
+  readonly status: number;
+  readonly details: Details;
+}
+
+/**
+ * An error response the operation doesn't declare, or whose body isn't the
+ * JSON it declares, or a success response whose body isn't valid JSON. The
+ * details are the body as text, or undefined when it is empty.
+ */
+export type Unexpected = Reason<'Unexpected', string | undefined>;
+
+/**
+ * What a call of an Effect client fails with: an ApiError, for one of the
+ * reasons `R`, an AuthError, or an HttpClientError.
+ */
+export type ClientError<R extends Reason = Reason> = ApiError<R> | AuthError | HttpClientError.HttpClientError;
+
+const statusNames: { readonly [status: string]: string } = {
+  '400': 'BadRequest',
+  '401': 'Unauthorized',
+  '402': 'PaymentRequired',
+  '403': 'Forbidden',
+  '404': 'NotFound',
+  '405': 'MethodNotAllowed',
+  '406': 'NotAcceptable',
+  '408': 'RequestTimeout',
+  '409': 'Conflict',
+  '410': 'Gone',
+  '412': 'PreconditionFailed',
+  '413': 'ContentTooLarge',
+  '415': 'UnsupportedMediaType',
+  '422': 'UnprocessableContent',
+  '429': 'TooManyRequests',
+  '500': 'InternalServerError',
+  '501': 'NotImplemented',
+  '502': 'BadGateway',
+  '503': 'ServiceUnavailable',
+  '504': 'GatewayTimeout',
+};
+
+/**
+ * Returns the tag of the reason for a declared error response, by its
+ * status in the document: the name of the status, such as `NotFound` for
+ * 404, `Status418` for a status with no name here, `Status4XX` for a range,
+ * and `Default` for `default`.
+ */
+export function reasonTag(status: string): string {
+  if (status === 'default') {
+    return 'Default';
+  }
+  return Object.hasOwn(statusNames, status) ? statusNames[status]! : `Status${status}`;
+}
 
 /**
  * The options every Effect client takes.
@@ -115,15 +177,12 @@ export class EffectTransport {
    * Sends a request for operation and returns its decoded response. A
    * missing path parameter is a defect, as the Promise client throws.
    */
-  send<T>(
+  send<T, E extends ClientError = ClientError>(
     operation: Operation,
     request: object | undefined,
     options: RequestOptions | undefined,
-  ): Effect.Effect<T, ClientError> {
-    return Effect.suspend(() => this.#send(operation, (request ?? {}) as Fields, options)) as Effect.Effect<
-      T,
-      ClientError
-    >;
+  ): Effect.Effect<T, E> {
+    return Effect.suspend(() => this.#send(operation, (request ?? {}) as Fields, options)) as Effect.Effect<T, E>;
   }
 
   #send(
@@ -215,7 +274,7 @@ function decode(
           message: 'the response body is not valid JSON',
           status: response.status,
           response,
-          details: text,
+          reason: { _tag: 'Unexpected', status: response.status, details: text },
           cause,
         }),
       );
@@ -245,27 +304,33 @@ function apiError(operation: Operation, response: HttpClientResponse.HttpClientR
           // The body is kept as text.
         }
       }
-      const declared = lookup(operation.errors, response.status);
-      let details: unknown = text === '' ? undefined : text;
-      if (json && declared !== undefined && declared !== false) {
-        details = declared === true ? body : declared.decode(body);
+      const status = response.status;
+      const found = lookup(operation.errors, status);
+      let reason: Reason = { _tag: 'Unexpected', status, details: text === '' ? undefined : text };
+      if (json && found !== undefined && found.declared !== false) {
+        const { key, declared } = found;
+        reason = { _tag: reasonTag(key), status, details: declared === true ? body : declared.decode(body) };
       }
-      const message = (json ? errorMessage(body) : undefined) ?? String(response.status);
-      return new ApiError({ message, status: response.status, response, details });
+      const message = (json ? errorMessage(body) : undefined) ?? String(status);
+      return new ApiError({ message, status, response, reason });
     },
   );
 }
 
-function lookup(errors: Operation['errors'], status: number): Codec | boolean | undefined {
+// Returns the declared error response that `status` matches, and its key.
+function lookup(
+  errors: Operation['errors'],
+  status: number,
+): { readonly key: string; readonly declared: Codec | boolean } | undefined {
   if (errors === undefined) {
     return undefined;
   }
-  for (const key of [String(status), `${Math.floor(status / 100)}XX`]) {
+  for (const key of [String(status), `${Math.floor(status / 100)}XX`, 'default']) {
     if (Object.hasOwn(errors, key)) {
-      return errors[key];
+      return { key, declared: errors[key]! };
     }
   }
-  return Object.hasOwn(errors, 'default') ? errors['default'] : undefined;
+  return undefined;
 }
 
 function toParam(value: unknown): string {

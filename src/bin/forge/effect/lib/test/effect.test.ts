@@ -2,11 +2,26 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { Cause, Effect, Exit, Schedule } from 'effect';
-import { Headers as HttpHeaders, HttpClient, HttpClientRequest, HttpClientResponse } from 'effect/http';
+import {
+  Headers as HttpHeaders,
+  HttpClient,
+  type HttpClientError,
+  HttpClientRequest,
+  HttpClientResponse,
+} from 'effect/http';
 
 import { apiKey, make } from '../src/auth.js';
 import { int64, object } from '../src/codec.js';
-import { type ClientError, type ClientOptions, EffectTransport } from '../src/effect.js';
+import type { AuthError } from '../src/auth.js';
+import {
+  ApiError,
+  type ClientError,
+  type ClientOptions,
+  EffectTransport,
+  type Reason,
+  reasonTag,
+  type Unexpected,
+} from '../src/effect.js';
 import type { Operation } from '../src/index.js';
 import { json, mock } from './mock.js';
 
@@ -178,4 +193,83 @@ test("the HttpClient's span is named after the operation, and an Auth's headers 
   assert.equal(seen[0]!.span, 'GET /things/{id}');
   assert.ok(seen[0]!.redacted.includes('x-things-key'));
   assert.ok(seen[0]!.redacted.includes('authorization'));
+});
+
+test('a declared error response is a reason named after its status, with its body decoded', async () => {
+  const operation: Operation = {
+    method: 'GET',
+    route: '/things',
+    response: null,
+    errors: { '404': object([['error_code', 'errorCode', int64]]), '4XX': true, default: true },
+  };
+  const reasons = await Effect.runPromise(
+    Effect.forEach(
+      [
+        json(404, { error_code: 7 }),
+        json(429, { message: 'slow down' }),
+        json(500, { message: 'down' }),
+        new Response('<html>', { status: 404 }),
+      ],
+      (response) => {
+        const { client } = mock(response);
+        const transport = new EffectTransport(client, base);
+        return Effect.flip(transport.send(operation, {}, undefined));
+      },
+    ),
+  );
+  assert.deepEqual(
+    reasons.map((e) => (e._tag === 'ApiError' ? e.reason : e._tag)),
+    [
+      { _tag: 'NotFound', status: 404, details: { errorCode: 7n } },
+      { _tag: 'Status4XX', status: 429, details: { message: 'slow down' } },
+      { _tag: 'Default', status: 500, details: { message: 'down' } },
+      // A body that is not the declared JSON.
+      { _tag: 'Unexpected', status: 404, details: '<html>' },
+    ],
+  );
+});
+
+test('a reason is handled with its details typed, by catchReason or by unwrapReason and catchTag', async () => {
+  type GetError = ClientError<Reason<'NotFound', { readonly errorCode: number }> | Unexpected>;
+  const operation: Operation = { method: 'GET', route: '/things', response: null, errors: { '404': true } };
+  const get = (): Effect.Effect<unknown, GetError> => {
+    const { client } = mock(json(404, { errorCode: 7 }));
+    return new EffectTransport(client, base).send(operation, {}, undefined);
+  };
+
+  const caught = get().pipe(
+    Effect.catchReason('ApiError', 'NotFound', (reason) => Effect.succeed(`not found: ${reason.details.errorCode}`)),
+  );
+  assert.equal(await Effect.runPromise(caught), 'not found: 7');
+
+  // unwrapReason puts the reasons in the error channel, so catchTag leaves
+  // only the others.
+  const unwrapped = get().pipe(
+    Effect.unwrapReason('ApiError'),
+    Effect.catchTag('NotFound', (reason) => Effect.succeed(reason.details.errorCode)),
+  );
+  const rest: Effect.Effect<unknown, Unexpected | AuthError | HttpClientError.HttpClientError> = unwrapped;
+  assert.equal(await Effect.runPromise(rest), 7);
+});
+
+test('reasonTag names statuses', () => {
+  assert.deepEqual(['404', '418', '4XX', 'default', '503'].map(reasonTag), [
+    'NotFound',
+    'Status418',
+    'Status4XX',
+    'Default',
+    'ServiceUnavailable',
+  ]);
+});
+
+test('an ApiError is easy to make, as in a fake client, with the type of its reason', () => {
+  const response = HttpClientResponse.fromWeb(HttpClientRequest.get('https://api.test'), new Response(null));
+  const error = new ApiError({
+    message: 'no such thing',
+    status: 404,
+    response,
+    reason: { _tag: 'NotFound', status: 404, details: { errorCode: 7 } },
+  });
+  const typed: ClientError<Reason<'NotFound', { readonly errorCode: number }> | Unexpected> = error;
+  assert.deepEqual(typed._tag === 'ApiError' && typed.details, { errorCode: 7 });
 });

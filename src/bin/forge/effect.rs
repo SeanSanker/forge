@@ -116,13 +116,17 @@ fn effect(node: Node<'_>) -> Result<TsFile, Err> {
         p!(f, r#"export * as Auth from "./_/auth.js";"#);
         p!(
             f,
-            r#"export { ApiError, type ClientError, type ClientOptions, type RequestOptions } from "./_/effect.js";"#
+            r#"export { ApiError, type ClientError, type ClientOptions, type Reason, type RequestOptions, type Unexpected } from "./_/effect.js";"#
         );
         p!(f);
     }
     client_interface(&mut f, &entries, &groups, &group_names);
     p!(f);
     bind(&mut f, &entries, &groups, &group_names);
+    for entry in &entries {
+        p!(f);
+        declare_error(&mut f, entry.method);
+    }
     for entry in &entries {
         if let Some(pagination) = &entry.pagination {
             p!(f);
@@ -222,7 +226,7 @@ fn client_interface(
                     ".Stream<",
                     typ(pagination.item, Prec::Top),
                     ", ",
-                    client_error(),
+                    error_ident(m),
                     ">;"
                 );
             }
@@ -253,7 +257,12 @@ fn bind(f: &mut TsFile, entries: &[Entry<'_>], groups: &[Group<'_>], group_names
         f,
         "export function ",
         f.ident("bind"),
-        "(transport: ",
+        // A client with nothing to send leaves its transport unused.
+        if entries.is_empty() && groups.is_empty() {
+            "(_transport: "
+        } else {
+            "(transport: "
+        },
         EFFECT_RUNTIME.ident("EffectTransport").ty(),
         "): ",
         f.ident("Client"),
@@ -600,25 +609,96 @@ fn optional_without(request: &Request<'_>, param: &str) -> bool {
     params && body
 }
 
-/// Returns what `m` returns: an Effect of its response.
+/// Returns what `m` returns: an Effect of its response, which fails with
+/// its error.
 fn result(m: Method<'_>) -> Fragment {
     frag!(
         EFFECT.ident("Effect").ty(),
         ".Effect<",
         response_ident(m),
         ", ",
-        client_error(),
+        error_ident(m),
         ">"
     )
+}
+
+/// Declares what `m` fails with: a ClientError whose ApiError has a reason
+/// for each declared error response with a JSON body, named after its
+/// status, or is Unexpected.
+fn declare_error(f: &mut TsFile, m: Method<'_>) {
+    let mut reasons: Vec<Fragment> = Vec::new();
+    let mut tags = HashSet::new();
+    for response in m.errors() {
+        let Some(content) = response.json() else {
+            continue;
+        };
+        let tag = reason_tag(response.status());
+        if tags.insert(tag.clone()) {
+            reasons.push(frag!(
+                EFFECT_RUNTIME.ident("Reason").ty(),
+                "<",
+                js_string(&tag),
+                ", ",
+                typ(content.ty(), Prec::Top),
+                ">"
+            ));
+        }
+    }
+    reasons.push(frag!(EFFECT_RUNTIME.ident("Unexpected").ty()));
+    f.doc(&format!("What `{}` fails with.", method_name(m)));
+    p!(
+        f,
+        "export type ",
+        error_ident(m),
+        " = ",
+        EFFECT_RUNTIME.ident("ClientError").ty(),
+        "<",
+        join(" | ", reasons),
+        ">;"
+    );
+}
+
+/// Returns the tag of the reason for a declared error response, by its
+/// status, as `reasonTag` in the runtime names it.
+fn reason_tag(status: &str) -> String {
+    let name = match status {
+        "default" => "Default",
+        "400" => "BadRequest",
+        "401" => "Unauthorized",
+        "402" => "PaymentRequired",
+        "403" => "Forbidden",
+        "404" => "NotFound",
+        "405" => "MethodNotAllowed",
+        "406" => "NotAcceptable",
+        "408" => "RequestTimeout",
+        "409" => "Conflict",
+        "410" => "Gone",
+        "412" => "PreconditionFailed",
+        "413" => "ContentTooLarge",
+        "415" => "UnsupportedMediaType",
+        "422" => "UnprocessableContent",
+        "429" => "TooManyRequests",
+        "500" => "InternalServerError",
+        "501" => "NotImplemented",
+        "502" => "BadGateway",
+        "503" => "ServiceUnavailable",
+        "504" => "GatewayTimeout",
+        _ => return format!("Status{status}"),
+    };
+    name.to_owned()
+}
+
+/// Returns the error type of `m`, declared in its group's effect.ts.
+fn error_ident(m: Method<'_>) -> Ident {
+    Module::group(m.group())
+        .sub("effect.ts")
+        .ident(format!("{}Error", identifier(m.name().pascal())))
+        .ty()
 }
 
 /// Returns the call that sends the operation of `m`.
 fn send(m: Method<'_>) -> Fragment {
     frag!("transport.send(", operation_ident(m), ", request, options)")
-}
-
-fn client_error() -> Ident {
-    EFFECT_RUNTIME.ident("ClientError").ty()
 }
 
 fn request_options() -> Ident {

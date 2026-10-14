@@ -62,16 +62,16 @@ function items(response: unknown, pagination: Pagination): readonly unknown[] {
  * Returns a Stream of every item of every page of `operation`, from the
  * page that `request` picks, or the first.
  */
-export function paginate<I>(
+export function paginate<I, E extends ClientError = ClientError>(
   transport: EffectTransport,
   operation: Operation,
   pagination: Pagination,
   request: object | undefined,
   options: RequestOptions | undefined,
-): Stream.Stream<I, ClientError> {
+): Stream.Stream<I, E> {
   const fields = (request ?? {}) as Fields;
   const fetch = (param: string, value: unknown) =>
-    transport.send<unknown>(operation, value === undefined ? fields : { ...fields, [param]: value }, options);
+    transport.send<unknown, E>(operation, value === undefined ? fields : { ...fields, [param]: value }, options);
 
   if (pagination.kind === 'cursor') {
     return Stream.paginate(fields[pagination.cursor], (cursor: unknown) =>

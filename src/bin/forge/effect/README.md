@@ -21,10 +21,10 @@ effect.ts        the entry point: Api (the client as an Effect service), Auth, A
 <group>/effect.ts  the group's Effect Client and its bind
 ```
 
-Each method returns `Effect<Response, ClientError>`, where `ClientError` is
-`ApiError | AuthError | HttpClientError`. The request and response types,
-codecs and operations are the `ts` target's own, so both clients encode and
-decode alike.
+Each method returns `Effect<Response, GetError>`, where its error is a
+`ClientError`: `ApiError | AuthError | HttpClientError`. The request and
+response types, codecs and operations are the `ts` target's own, so both
+clients encode and decode alike.
 
 ```ts
 import { Effect, Layer } from 'effect';
@@ -46,6 +46,37 @@ const program = Effect.gen(function* () {
 Requests go through the `HttpClient` in context, so its middleware (retries,
 timeouts, test clients) applies to every method. Its span for each request
 is named after the operation, such as `GET /pets/{petId}`.
+
+## Errors
+
+An error response is an `ApiError`, whose `reason` says which one it is.
+Each error response the method declares with a JSON body is a reason named
+after its status, with the body, decoded as declared, as its `details`:
+
+```ts
+// GET /pets declares a 404 with an Error body.
+export type ListError = ClientError<Reason<'NotFound', Error> | Unexpected>;
+```
+
+Statuses are named as `NotFound` for 404, `Status418` for one without a
+name, `Status4XX` for a range and `Default` for `default`. Anything else,
+such as an undeclared status or a body that isn't the declared JSON, is
+`Unexpected`, with the body as text.
+
+```ts
+api.pets.list().pipe(
+  // Handle one reason, with its details typed.
+  Effect.catchReason('ApiError', 'NotFound', (reason) => Effect.succeed(reason.details.message)),
+);
+
+api.pets.list().pipe(
+  // Or put the reasons in the error channel, and handle them by tag.
+  Effect.unwrapReason('ApiError'),
+  Effect.catchTag('NotFound', (reason) => Effect.succeed([])),
+); // fails with Unexpected | AuthError | HttpClientError
+```
+
+`Effect.catchTag('ApiError', ...)` still handles every error response.
 
 ## Auth
 

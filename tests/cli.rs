@@ -98,7 +98,9 @@ const PAGED: &str = r##"{
       "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {
         "type": "object", "properties": {
           "data": {"type": "array", "items": {"$ref": "#/components/schemas/Item"}},
-          "has_more": {"type": "boolean"}}}}}}}}},
+          "has_more": {"type": "boolean"}}}}}},
+        "404": {"description": "missing", "content": {"application/json": {"schema": {
+          "type": "object", "properties": {"code": {"type": "integer"}}}}}}}}},
     "/events": {"get": {"x-fern-sdk-group-name": "events", "x-fern-sdk-method-name": "list",
       "x-fern-pagination": {"cursor": "$request.cursor",
         "next_cursor": "$response.result_info.next_cursor", "results": "$response.result"},
@@ -158,27 +160,32 @@ fn effect() {
     expect(
         "items/effect.ts",
         &[
-            "list(request?: ListRequest, options?: RequestOptions): Effect.Effect<ListResponse, ClientError>;",
-            r#"listAll(request?: Omit<ListRequest, "start">, options?: RequestOptions): Stream.Stream<Item, ClientError>;"#,
+            "list(request?: ListRequest, options?: RequestOptions): Effect.Effect<ListResponse, ListError>;",
+            r#"listAll(request?: Omit<ListRequest, "start">, options?: RequestOptions): Stream.Stream<Item, ListError>;"#,
             "listAll: (request, options) => paginate(transport, ListOperation, ListPagination, request, options),",
             r#"{ kind: "offset", offset: "start", results: ["data"], step: "pageSize", hasNextPage: ["hasMore"] }"#,
+            r#"export type ListError = ClientError<Reason<"NotFound", { code?: number }> | Unexpected>;"#,
         ],
     );
     expect(
         "events/effect.ts",
         &[
-            r#"listAll(request: Omit<ListRequest, "cursor">, options?: RequestOptions): Stream.Stream<Item, ClientError>;"#,
+            r#"listAll(request: Omit<ListRequest, "cursor">, options?: RequestOptions): Stream.Stream<Item, ListError>;"#,
             r#"{ kind: "cursor", cursor: "cursor", nextCursor: ["resultInfo", "nextCursor"], results: ["result"] }"#,
         ],
     );
     expect(
         "zones/effect.ts",
         &[
-            "readonly settings: ((request: SettingsRequest, options?: RequestOptions) => Effect.Effect<SettingsResponse, ClientError>) & SettingsClient;",
+            "readonly settings: ((request: SettingsRequest, options?: RequestOptions) => Effect.Effect<SettingsResponse, SettingsError>) & SettingsClient;",
             "bindSettings(transport),",
         ],
     );
     expect("items/client.ts", &["export const ListOperation: Operation = {"]);
+    expect(
+        "events/effect.ts",
+        &["export type ListError = ClientError<Unexpected>;"],
+    );
     std::fs::remove_dir_all(&out).unwrap();
 }
 
