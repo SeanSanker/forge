@@ -31,6 +31,10 @@ struct Args {
     /// The directory to write the SDK to.
     #[arg(long)]
     out: PathBuf,
+    /// The name of the SDK's package, such as `@acme/pets-sdk`, for the
+    /// `effect` target, which keys the SDK's Effect service with it.
+    #[arg(long)]
+    name: Option<String>,
 }
 
 /// What forge generates an SDK with.
@@ -84,7 +88,8 @@ fn run(args: Args) -> Result<(), Err> {
         }
         Target::Effect => {
             let forge = read(&args.spec)?;
-            forge::write(&args.out, forge::run(&forge, &effect::Generator)?)
+            let generator = effect::Generator { name: args.name };
+            forge::write(&args.out, forge::run(&forge, &generator)?)
         }
         #[cfg(feature = "wasm")]
         Target::Wasm(path) => {

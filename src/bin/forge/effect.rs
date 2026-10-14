@@ -21,7 +21,11 @@ use crate::ts::types::{Prec, all_optional, doc, identifier, js_string, kept, key
 use crate::ts::{self, File, Node, RUNTIME_DIR};
 
 /// Generates a TypeScript SDK with an Effect client.
-pub struct Generator;
+pub struct Generator {
+    /// The name of the SDK's package, such as `@acme/pets-sdk`, which keys
+    /// its Api service. Without it, the API's title does.
+    pub name: Option<String>,
+}
 
 impl Plugin for Generator {
     type File = File;
@@ -30,7 +34,7 @@ impl Plugin for Generator {
     /// effect.ts, and the Effect runtime.
     fn generate(&self, forge: &Forge) -> Result<impl Iterator<Item = File>, Err> {
         let mut files: Vec<File> = ts::Generator.generate(forge)?.collect();
-        files.push(File::Ts(effect(Node::Root(forge))?));
+        files.push(File::Ts(effect(Node::Root(forge), self.name.as_deref())?));
         files.extend(RUNTIME.iter().map(|&(path, source)| File::Runtime {
             path: RUNTIME_DIR.sub(path).as_str().to_owned(),
             content: format!("{PREAMBLE}{source}"),
@@ -41,7 +45,7 @@ impl Plugin for Generator {
     /// Returns the files of the TypeScript SDK's group, and its effect.ts.
     fn generate_group(&self, group: Group<'_>) -> Result<impl Iterator<Item = File>, Err> {
         let mut files: Vec<File> = ts::Generator.generate_group(group)?.collect();
-        files.push(File::Ts(effect(Node::Group(group))?));
+        files.push(File::Ts(effect(Node::Group(group), self.name.as_deref())?));
         Ok(files.into_iter())
     }
 }
@@ -92,7 +96,7 @@ enum Kind {
 /// Returns the effect.ts of `node`: its Client and bind, then how each
 /// paginated method pages. The root's also declares Api, and exports what
 /// the SDK's users need with it.
-fn effect(node: Node<'_>) -> Result<TsFile, Err> {
+fn effect(node: Node<'_>, name: Option<&str>) -> Result<TsFile, Err> {
     let groups = node.children();
     let group_names: HashMap<String, Group<'_>> = groups.iter().map(|&sub| (group_name(sub), sub)).collect();
     let entries: Vec<Entry<'_>> = node
@@ -116,8 +120,9 @@ fn effect(node: Node<'_>) -> Result<TsFile, Err> {
         p!(f, r#"export * as Auth from "./_/auth.js";"#);
         p!(
             f,
-            r#"export { ApiError, type ClientError, type ClientOptions, type Reason, type RequestOptions, type Unexpected } from "./_/effect.js";"#
+            r#"export { ApiError, type ClientError, type ClientOptions, EffectTransport, type Reason, type RequestOptions, type Unexpected } from "./_/effect.js";"#
         );
+        p!(f, r#"export type { Operation } from "./_/index.js";"#);
         p!(f);
     }
     client_interface(&mut f, &entries, &groups, &group_names);
@@ -135,7 +140,7 @@ fn effect(node: Node<'_>) -> Result<TsFile, Err> {
     }
     if let Node::Root(forge) = node {
         p!(f);
-        api(&mut f, forge);
+        api(&mut f, &service_key(forge, name));
     }
     Ok(f)
 }
@@ -378,9 +383,8 @@ fn declare_pagination(f: &mut TsFile, m: Method<'_>, pagination: &Pagination<'_>
     );
 }
 
-/// Declares Api, the root's Client as an Effect service, keyed by the
-/// title of the API.
-fn api(f: &mut TsFile, forge: &Forge) {
+/// Declares Api, the root's Client as an Effect service, under `key`.
+fn api(f: &mut TsFile, key: &str) {
     let effect = EFFECT.ident("Effect");
     let layer = EFFECT.ident("Layer");
     let http_client = HTTP.ident("HttpClient");
@@ -402,7 +406,7 @@ fn api(f: &mut TsFile, forge: &Forge) {
         ", ",
         client,
         ">()(",
-        js_string(&service_key(forge)),
+        js_string(key),
         ") {"
     );
     f.indent(|f| {
@@ -471,9 +475,13 @@ fn api(f: &mut TsFile, forge: &Forge) {
     p!(f, "}");
 }
 
-/// Returns the key of the Api service: the title of the API, the first
-/// paragraph of its description, followed by `/Api`.
-fn service_key(forge: &Forge) -> String {
+/// Returns the key of the Api service: the name of the SDK's package, or
+/// else the title of the API, the first paragraph of its description,
+/// followed by `/Api`, as Effect keys services by their module.
+fn service_key(forge: &Forge, name: Option<&str>) -> String {
+    if let Some(name) = name {
+        return format!("{}/Api", name.trim_end_matches('/'));
+    }
     let title = forge.description.split("\n\n").next().unwrap_or_default();
     let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
     if title.is_empty() {

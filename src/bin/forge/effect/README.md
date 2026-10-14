@@ -41,7 +41,38 @@ const program = Effect.gen(function* () {
 }).pipe(Effect.provide(ApiLive));
 ```
 
-`Api` is keyed by the API's title (`info.title`), followed by `/Api`.
+`Api` is an Effect service keyed by `--name`, the name of the SDK's
+package, followed by `/Api`, as Effect keys services by their module:
+
+```sh
+forge openapi.json --target effect --out sdk --name @acme/pets-sdk   # "@acme/pets-sdk/Api"
+```
+
+Without `--name`, the API's title (`info.title`) keys it. Keys must differ
+between the SDKs an app uses together; each SDK exports its client as `Api`,
+so import each under its own name.
+
+## Extending a client
+
+Generated files are rewritten each time the SDK is generated, so extend a
+client by building on it rather than editing it:
+
+- **A service of your own** on top of `Api`, with your domain's methods and
+  errors.
+- **An endpoint the document doesn't describe**: send an `Operation` of your
+  own with an `EffectTransport`, which the entry point exports.
+- **What applies to every request**: `HttpClient` middleware, such as
+  retries, headers or logging, or an `Auth` of your own.
+
+```ts
+import { EffectTransport, type Operation } from './sdk/effect.js';
+
+const archive: Operation = { method: 'POST', route: '/pets/{petId}/archive', response: undefined };
+const archivePet = (petId: string) =>
+  Effect.flatMap(HttpClient.HttpClient, (client) =>
+    new EffectTransport(client, options).send<void>(archive, { petId }, undefined),
+  );
+```
 
 Requests go through the `HttpClient` in context, so its middleware (retries,
 timeouts, test clients) applies to every method. Its span for each request

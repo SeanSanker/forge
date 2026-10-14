@@ -154,6 +154,8 @@ fn effect() {
         &[
             r#"export * as Auth from "./_/auth.js";"#,
             r#"export class Api extends Context.Service<Api, Client>()("Shop/Api") {"#,
+            "EffectTransport,",
+            r#"export type { Operation } from "./_/index.js";"#,
             "Effect.map(HttpClient.HttpClient, (client) => Api.of(bind(new EffectTransport(client, options))));",
         ],
     );
@@ -237,4 +239,27 @@ fn effect_pagination_errors() {
             "{pagination}: {err}"
         );
     }
+}
+
+#[test]
+fn effect_name() {
+    let out = std::env::temp_dir().join(format!("forge-cli-effect-name-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&out);
+    let args = [
+        "-",
+        "--target",
+        "effect",
+        "--out",
+        out.to_str().unwrap(),
+        "--name",
+        "@acme/shop-sdk",
+    ];
+    let result = forge(&args, PAGED);
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let root = std::fs::read_to_string(out.join("effect.ts")).unwrap();
+    assert!(
+        root.contains(r#"Context.Service<Api, Client>()("@acme/shop-sdk/Api")"#),
+        "{root}"
+    );
+    std::fs::remove_dir_all(&out).unwrap();
 }
