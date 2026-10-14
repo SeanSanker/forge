@@ -6,7 +6,7 @@ by this fork's `effect` target from the OpenAPI document that forge
 publishes, and an app that uses it.
 
 forge generates it in about a second: 3,600 operations in 1,300 groups, with
-typed errors for each method, an `All` Stream for each of 180 paginated list
+typed errors for each method, an `All` Stream for each of 214 paginated list
 methods, and credentials from `CLOUDFLARE_API_TOKEN`.
 
 ```ts
@@ -49,8 +49,9 @@ your environment, never in a file here.
   release, checks its SHA-256, and runs forge with
   `--target effect --name @example/cloudflare-effect`. `sdk/` isn't committed.
 - `scripts/paginate.ts` adds `x-fern-pagination` to the list operations, which
-  the document pages with `page` but doesn't describe: a GET with a `page`
-  parameter and a `result` array.
+  the document pages but doesn't describe: a GET with a `result` array and
+  either a `cursor` parameter, with the next cursor at `result_info.cursor`
+  (such as KV keys), or a `page` parameter.
 - `src/report.ts` is the app, which depends on the `Api` service rather than on
   HTTP, and `test/report.test.ts` tests it with `Api.layerTest`, which fakes
   the methods it stubs.

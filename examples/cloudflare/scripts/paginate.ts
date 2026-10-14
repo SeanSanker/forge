@@ -5,10 +5,16 @@
  *
  *   node scripts/paginate.ts IN OUT
  *
- * A list operation here is a GET with a `page` query parameter whose 200
- * response is an object with a `result` array: it pages by page number, from
- * 1, until a page is empty. Only a `result` that is plainly an array counts,
- * as the generator checks the paths it is given.
+ * A list operation here is a GET whose 200 response is an object with a
+ * `result` array, and that pages one of two ways:
+ *
+ * - by cursor, when it has a `cursor` query parameter and its response has
+ *   the next page's cursor at `result_info.cursor`, until there is none;
+ * - otherwise by page number, from 1, when it has a `page` query parameter,
+ *   until a page is empty.
+ *
+ * Only a `result` that is plainly an array counts, as the generator checks
+ * the paths it is given.
  */
 
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -68,7 +74,9 @@ const isArray = (schema: Schema | undefined) =>
   schema !== undefined &&
   (schema['type'] === 'array' || ('items' in schema && !('anyOf' in schema || 'oneOf' in schema)));
 
-let added = 0;
+const isString = (schema: Schema | undefined) => schema !== undefined && schema['type'] === 'string';
+
+const added = { cursor: 0, offset: 0 };
 for (const item of Object.values(doc['paths'] as Schema)) {
   const operation = resolve((item as Schema)['get']);
   if (operation === undefined || operation['x-fern-pagination'] !== undefined) {
@@ -78,13 +86,23 @@ for (const item of Object.values(doc['paths'] as Schema)) {
     ...(((item as Schema)['parameters'] as unknown[] | undefined) ?? []),
     ...((operation['parameters'] as unknown[] | undefined) ?? []),
   ];
-  const pages = parameters.map(resolve).some((p) => p?.['in'] === 'query' && p['name'] === 'page');
+  const query = (name: string) => parameters.map(resolve).some((p) => p?.['in'] === 'query' && p['name'] === name);
   const body = resolve(at(operation, 'responses', '200', 'content', 'application/json', 'schema'));
-  if (pages && isArray(property(body, 'result'))) {
+  if (!isArray(property(body, 'result'))) {
+    continue;
+  }
+  if (query('cursor') && isString(property(property(body, 'result_info'), 'cursor'))) {
+    operation['x-fern-pagination'] = {
+      cursor: '$request.cursor',
+      next_cursor: '$response.result_info.cursor',
+      results: '$response.result',
+    };
+    added.cursor++;
+  } else if (query('page')) {
     operation['x-fern-pagination'] = { offset: '$request.page', results: '$response.result' };
-    added++;
+    added.offset++;
   }
 }
 
 writeFileSync(output, JSON.stringify(doc));
-console.log(`x-fern-pagination added to ${added} operations`);
+console.log(`x-fern-pagination added to ${added.cursor} operations by cursor, ${added.offset} by page number`);
