@@ -19,7 +19,11 @@ fn forge(args: &[&str], stdin: &str) -> Output {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(stdin.as_bytes()).unwrap();
+    // forge can exit before it reads its input, as when its flags are
+    // wrong, so a write that finds the pipe closed is not an error.
+    if let Err(err) = child.stdin.take().unwrap().write_all(stdin.as_bytes()) {
+        assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe, "{err}");
+    }
     child.wait_with_output().unwrap()
 }
 
