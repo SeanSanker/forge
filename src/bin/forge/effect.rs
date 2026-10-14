@@ -15,7 +15,7 @@ use forge::ts::{File as TsFile, Fragment, Ident, Module, PREAMBLE, frag, join, p
 use forge::{Err, Forge, Group, Method, Model, Plugin, Type};
 
 use crate::ts::client::{
-    Request, group_name, method_doc, method_name, operation_name, request_name, response, response_name, skipped,
+    Request, group_name, method_doc, method_name, operation_name, request_name, response_name, skipped,
 };
 use crate::ts::types::{Prec, all_optional, doc, identifier, js_string, kept, key, typ};
 use crate::ts::{self, File, Node, RUNTIME_DIR};
@@ -736,9 +736,19 @@ fn pagination<'f>(m: Method<'f>, request: &Request<'f>) -> Result<Option<Paginat
     let require =
         |name: &str| -> Result<&str, Err> { get(name)?.ok_or_else(|| format!("{at}: {name} is missing").into()) };
 
-    let (types, _) = response(m);
-    let [body] = types[..] else {
-        return Err(format!("{at}: the method needs one JSON response body to page through").into());
+    // A page is the JSON body of the success response, or of the 200 one
+    // when there are others, such as a 202.
+    let bodies: Vec<(&str, Type<'f>)> = m
+        .responses()
+        .filter_map(|r| r.json().map(|content| (r.status(), content.ty())))
+        .collect();
+    let body = match bodies[..] {
+        [(_, body)] => body,
+        _ => bodies
+            .iter()
+            .find(|&&(status, _)| status == "200")
+            .map(|&(_, body)| body)
+            .ok_or_else(|| format!("{at}: the method needs a JSON response body, or a 200 one, to page through"))?,
     };
     let response_path = |name: &str, path: &str| -> Result<(Vec<String>, Type<'f>), Err> {
         let rest = path

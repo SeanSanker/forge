@@ -318,3 +318,26 @@ fn effect_security() {
     );
     std::fs::remove_dir_all(&out).unwrap();
 }
+
+#[test]
+fn effect_pages_through_the_200_body() {
+    // A 200 page of items, and a 202 while the results are being prepared.
+    let spec = r#"{
+  "openapi": "3.0.3", "info": {"title": "t", "version": "1"},
+  "paths": {"/a": {"get": {"x-fern-sdk-group-name": "a", "x-fern-sdk-method-name": "list",
+    "x-fern-pagination": {"offset": "$request.page", "results": "$response.result"},
+    "parameters": [{"name": "page", "in": "query", "schema": {"type": "integer"}}],
+    "responses": {
+      "200": {"description": "ok", "content": {"application/json": {"schema": {
+        "type": "object", "properties": {"result": {"type": "array", "items": {"type": "string"}}}}}}},
+      "202": {"description": "later", "content": {"application/json": {"schema": {
+        "type": "object", "properties": {"job": {"type": "string"}}}}}}}}}}
+}"#;
+    let out = std::env::temp_dir().join(format!("forge-cli-effect-200-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&out);
+    let result = forge(&["-", "--target", "effect", "--out", out.to_str().unwrap()], spec);
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let a = std::fs::read_to_string(out.join("a/effect.ts")).unwrap();
+    assert!(a.contains("Stream.Stream<string, ListError>"), "{a}");
+    std::fs::remove_dir_all(&out).unwrap();
+}

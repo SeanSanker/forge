@@ -333,7 +333,7 @@ fn response_type(f: &mut File, m: Method<'_>) {
 
 /// Returns the types of the JSON bodies of the success responses of `m`,
 /// each model once, and whether a success response can have no body.
-pub(crate) fn response(m: Method<'_>) -> (Vec<Type<'_>>, bool) {
+pub(super) fn response(m: Method<'_>) -> (Vec<Type<'_>>, bool) {
     let mut types = Vec::new();
     let mut optional = false;
     let mut seen: HashSet<Model<'_>> = HashSet::new();
