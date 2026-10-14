@@ -1,7 +1,8 @@
 #!/bin/sh
 # Generates sdk/ from Cloudflare's OpenAPI document, as forge publishes it,
 # with x-fern-pagination added by scripts/paginate.ts, using the forge of
-# this repository. The document is pinned, and checked against its SHA-256.
+# this repository, and puts in Cloudflare's envelope hook. The document is
+# pinned, and checked against its SHA-256.
 set -eu
 cd "$(dirname "$0")/.."
 
@@ -23,3 +24,4 @@ node scripts/paginate.ts .spec/openapi.forge.json .spec/openapi.paged.json
 cargo build --release --quiet --manifest-path ../../Cargo.toml --bin forge
 rm -rf sdk
 ../../target/release/forge .spec/openapi.paged.json --target effect --out sdk --name @example/cloudflare-effect
+cp scripts/envelope.ts sdk/_/hooks/envelope.ts
