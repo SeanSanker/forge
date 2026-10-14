@@ -188,9 +188,20 @@ async function apiError(operation: Operation, response: Response): Promise<ApiEr
 }
 
 /**
+ * What the generated clients send their requests with: the bind of each
+ * client takes one. Transport is the one that createClient uses.
+ */
+export interface Sender {
+  /**
+   * Sends a request for operation and returns its decoded response.
+   */
+  send<T>(operation: Operation, request: object | undefined, options: RequestOptions | undefined): Promise<T>;
+}
+
+/**
  * Sends the requests of the generated clients.
  */
-export class Transport {
+export class Transport implements Sender {
   readonly #options: BaseClientOptions;
   readonly #baseUrl: string;
 

@@ -19,5 +19,6 @@ export {
   type Operation,
   type Pagination,
   type RequestOptions,
+  type Sender,
   Transport,
 } from './transport.js';

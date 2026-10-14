@@ -90,11 +90,11 @@ fn client_options(f: &mut File) {
     p!(f, "}");
 }
 
-/// Declares bind, which returns the Client of a group on a transport: each
-/// method sends its operation, and each subgroup is a getter that binds the
-/// subgroup's Client the first time it is read. A method and a subgroup
-/// with the same name share a getter, of the method with the members of the
-/// subgroup's Client.
+/// Declares bind, which returns the Client of a group on a transport, any
+/// Sender rather than only the runtime's Transport: each method sends its
+/// operation, and each subgroup is a getter that binds the subgroup's Client
+/// the first time it is read. A method and a subgroup with the same name
+/// share a getter, of the method with the members of the subgroup's Client.
 fn bind(
     f: &mut File,
     methods: &[(Method<'_>, Request<'_>)],
@@ -111,7 +111,7 @@ fn bind(
         "export function ",
         f.ident("bind"),
         "(transport: ",
-        runtime("Transport"),
+        runtime("Sender").ty(),
         "): ",
         f.ident("Client"),
         " {"

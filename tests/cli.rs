@@ -77,5 +77,9 @@ fn ts() {
         client.contains("get(request?: GetRequest, options?: RequestOptions): Promise<GetResponse>;"),
         "{client}"
     );
+    assert!(
+        client.contains("export function bind(transport: Sender): Client {"),
+        "{client}"
+    );
     std::fs::remove_dir_all(&out).unwrap();
 }
