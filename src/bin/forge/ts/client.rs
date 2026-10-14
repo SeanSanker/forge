@@ -110,7 +110,12 @@ fn bind(
         f,
         "export function ",
         f.ident("bind"),
-        "(transport: ",
+        // A client with nothing to send leaves its transport unused.
+        if methods.is_empty() && groups.is_empty() {
+            "(_transport: "
+        } else {
+            "(transport: "
+        },
         runtime("Sender").ty(),
         "): ",
         f.ident("Client"),
