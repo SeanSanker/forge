@@ -5,8 +5,9 @@ An unofficial experiment, not affiliated with or endorsed by Cloudflare: an
 by this fork's `effect` target from the OpenAPI document that forge
 publishes, and an app that uses it.
 
-forge generates it in about a second: 3,600 operations in 1,300 groups, with
-typed errors for each method, an `All` Stream for each of 214 paginated list
+forge generates it in about a second: 3,094 methods in 1,304 groups, one for
+each of the document's 3,605 operations that has JSON bodies (forge leaves out
+the others), with typed errors for each method, an `All` Stream for each of 214 paginated list
 methods, and credentials from `CLOUDFLARE_API_TOKEN`.
 
 ```ts
