@@ -1,88 +1,166 @@
-# An Effect SDK for Cloudflare's API
+# Cloudflare's API as an Effect SDK
 
-An unofficial experiment, not affiliated with or endorsed by Cloudflare: an
-[Effect](https://effect.website) SDK for the whole Cloudflare API, generated
-by this fork's `effect` target from the OpenAPI document that forge
-publishes, and an app that uses it.
+A small prototype. [forge](https://github.com/cloudflare/forge) is Cloudflare's
+generator that turns an OpenAPI document into a TypeScript SDK. This fork adds
+an `effect` target to it, which also writes an [Effect](https://effect.website)
+client. This example points it at the OpenAPI document Cloudflare publishes
+for forge, and uses the result.
 
-forge generates it in about a second: 3,094 methods in 1,304 groups, one for
-each of the document's 3,605 operations that has JSON bodies (forge leaves out
-the others), with typed errors for each method, an `All` Stream for each of 214 paginated list
-methods, and credentials from `CLOUDFLARE_API_TOKEN`.
+It's an experiment, and it isn't affiliated with or endorsed by Cloudflare.
+
+```sh
+forge openapi.json --target effect --out sdk
+```
+
+From Cloudflare's document, that takes about a second and writes 3,094 typed
+methods in 1,304 groups: one for each operation with JSON bodies (forge leaves
+out the others). The whole SDK typechecks in about two seconds.
+
+## What it looks like
+
+The SDK is an Effect service, `Api`. Your code asks for it, and a layer
+provides it:
 
 ```ts
+import { Effect, Layer, Stream } from 'effect';
+import { FetchHttpClient } from 'effect/http';
+import { Api } from './sdk/effect.js';
+
+const program = Effect.gen(function* () {
+  const api = yield* Api;
+  const zone = yield* api.zones.get({ zoneId });
+  // ...
+});
+
+// Reads CLOUDFLARE_API_TOKEN, the variable Cloudflare's document names.
 const CloudflareLive = Api.layerConfig({ retry: true }).pipe(Layer.provide(FetchHttpClient.layer));
 
-const report = Effect.gen(function* () {
-  const api = yield* Api;
-  // Every active zone, then every DNS record of each, a page at a time.
-  return yield* api.zones.listAll({ status: 'active' }).pipe(
-    Stream.mapEffect((zone) => api.dns.records.listAll({ zoneId: zone.id }).pipe(Stream.runCount), {
-      concurrency: 4,
-    }),
-    Stream.runCollect,
-  );
-}).pipe(
-  // Cloudflare declares its 4XX responses, so their details are typed.
-  Effect.catchReason('ApiError', 'Status4XX', (reason) => Console.error(reason.details.errors)),
-  Effect.provide(CloudflareLive),
+program.pipe(Effect.provide(CloudflareLive), Effect.runPromise);
+```
+
+### Errors are part of each method's type
+
+Each method fails with the error responses its operation declares, with their
+bodies decoded and typed. Cloudflare declares its 4XX responses, so:
+
+```ts
+api.kv.namespaces.get({ accountId, namespaceId }).pipe(
+  Effect.catchReason('ApiError', 'Status4XX', ({ details }) =>
+    // details.errors: { code: number; message: string }[]
+    Console.log(details.errors),
+  ),
 );
 ```
 
-## Running it
+Asking the live API for a namespace that doesn't exist gives code `10013`,
+"namespace not found", as a typed value rather than a thrown `unknown`.
 
-It needs Node 24, pnpm and Rust (cargo), to build forge from this repository.
+### Paginated lists are Streams
+
+Each paginated method gets an `All` twin that returns a `Stream` of every item,
+and fetches pages as the stream is read. Cursors and page numbers are the SDK's
+business:
+
+```ts
+// Every DNS record of every active zone, four zones at a time.
+api.zones
+  .listAll({ status: 'active' })
+  .pipe(Stream.flatMap((zone) => api.dns.records.listAll({ zoneId: zone.id }), { concurrency: 4 }));
+
+// Three keys: one request, since the stream stops after the first page.
+api.kv.keys.listAll({ accountId, namespaceId, prefix: 'dog:' }).pipe(Stream.take(3));
+```
+
+### Cleanup happens, even on Ctrl-C
+
+Because calls are Effects, a resource can be scoped: made, used, and deleted
+when the scope closes, however it closes.
+
+```ts
+const namespace =
+  yield *
+  Effect.acquireRelease(api.kv.namespaces.create({ accountId, title }), (ns) =>
+    api.kv.namespaces.delete({ accountId, namespaceId: ns.id }).pipe(Effect.orDie),
+  );
+```
+
+### Tests need no HTTP
+
+App code depends on `Api`, not on `fetch`, so a test provides a fake one.
+`Api.layerTest` fakes the methods you stub, and anything else fails, naming its
+route (`GET /zones/{zoneId}/dns_records isn't stubbed`).
+
+```ts
+const Fake = Api.layerTest({
+  zones: { listAll: () => Stream.make(zone('example.com')) },
+});
+
+program.pipe(Effect.provide(Fake));
+```
+
+### And some defaults worth having
+
+- **Retries** (`retry: true`) only repeat requests that are safe to repeat:
+  GET, PUT, DELETE, or a POST with an `Idempotency-Key`. They wait for
+  `Retry-After`, and authenticate each attempt again.
+- **The token** is read as a `Redacted` secret, and the `Authorization` header
+  is redacted from logs and traces.
+- **Each request is a span** named after its route, such as
+  `GET /zones/{zoneId}/dns_records`.
+- **The Promise client is still there.** The Effect client is generated next
+  to it, from the same types and codecs.
+
+## Try it
+
+You need Node 24, pnpm, and Rust (cargo), since forge is built from this
+repository.
 
 ```sh
 pnpm install
-pnpm generate                      # writes sdk/ from Cloudflare's document
-pnpm test                          # the report, against a fake Cloudflare
-CLOUDFLARE_API_TOKEN=... pnpm start   # the report, against your account
+pnpm generate     # downloads Cloudflare's document and writes sdk/
+pnpm test         # runs the examples against a fake Cloudflare
 ```
 
-`pnpm start` counts the DNS records of each of your active zones by type. It
-only reads: a token with Zone Read and DNS Read is enough. Keep the token in
-your environment, never in a file here.
-
-### The tour
+Two programs talk to a real account. Keep the token in your environment,
+never in a file here.
 
 ```sh
+# Reads only: counts the DNS records of each of your zones by type.
+# A token with Zone Read and DNS Read is enough.
+CLOUDFLARE_API_TOKEN=... pnpm start
+
+# Writes, then deletes what it wrote: 100 KV keys and 100 D1 rows, read back
+# a page at a time, with each request printed. Needs Workers KV Storage Edit
+# and D1 Edit.
 CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... pnpm tour
 ```
 
-`pnpm tour` writes to the account, and deletes what it writes. It makes a KV
-namespace, writes 100 keys to it, streams them back ten to a page, takes three
-from a prefix, and gets a namespace that doesn't exist, for a typed 404. Then
-it makes a D1 database, inserts 100 rows, counts them, and pages through the
-account's databases. It prints each request as it goes, with ids left out.
+For a throwaway account to run the tour in, Wrangler's `--temporary` flag makes
+one that lasts an hour, with no sign-up.
 
-The namespace and the database are scoped resources (`Effect.acquireRelease`),
-so they are deleted when the tour ends, fails, or is interrupted with Ctrl-C.
-It needs a token with Workers KV Storage Edit and D1 Edit. `src/tour.ts` is
-the tour, and `test/tour.test.ts` runs it against a fake Cloudflare.
-
-Wrangler's `--temporary` flag can make a throwaway account to run it in, which
-expires after an hour unless claimed.
-
-## How it is made
+## How it's made
 
 - `scripts/generate.sh` downloads Cloudflare's document from a pinned forge
   release, checks its SHA-256, and runs forge with
   `--target effect --name @example/cloudflare-effect`. `sdk/` isn't committed.
-- `scripts/paginate.ts` adds `x-fern-pagination` to the list operations, which
-  the document pages but doesn't describe: a GET with a `result` array and
-  either a `cursor` parameter, with the next cursor at `result_info.cursor`
-  (such as KV keys), or a `page` parameter.
-- `scripts/envelope.ts` is put in place of forge's envelope hook. Cloudflare
-  wraps each payload in `{ success, errors, messages, result }`, and the
-  document describes a single result without it, so the hook unwraps a
-  result that isn't an array. A list keeps its envelope, as the document
-  describes it, which leaves about 20 operations whose document gives a bare
-  array with their envelope.
-- `src/report.ts` is the app, which depends on the `Api` service rather than on
-  HTTP, and `test/report.test.ts` tests it with `Api.layerTest`, which fakes
-  the methods it stubs.
+- `scripts/paginate.ts` marks which list operations page, since the document
+  pages them without saying so: a GET with a `result` array and either a
+  `cursor` parameter, with the next cursor at `result_info.cursor` (KV keys,
+  for one), or a `page` parameter. That gives 214 `All` Streams.
+- `scripts/envelope.ts` replaces forge's envelope hook. Cloudflare wraps each
+  payload in `{ success, errors, messages, result }`, and the document
+  describes a single result without that wrapper, so the hook unwraps a result
+  that isn't an array. Lists keep theirs, as the document describes them.
+- `src/report.ts` and `src/tour.ts` are the programs, and `test/` runs them
+  against fakes made with `Api.layerTest`.
 
-The document's security scheme, `api_token`, gives `Security.apiToken` and
-`Api.layerConfig()`, and its server gives the default base URL. See
-[the effect target](../../src/bin/forge/effect/README.md) for the rest.
+## Limits
+
+- It's a prototype on a fork, not a published package.
+- Operations without JSON bodies aren't in the SDK, as in forge's TypeScript
+  target.
+- About 20 operations whose document describes a bare array still come back
+  with Cloudflare's wrapper, since the envelope hook can't tell them apart.
+
+[The effect target's README](../../src/bin/forge/effect/README.md) covers the
+generator in full: errors, auth, retries, testing and pagination.
