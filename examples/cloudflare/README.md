@@ -38,7 +38,7 @@ const CloudflareLive = Api.layerConfig({ retry: true }).pipe(Layer.provide(Fetch
 program.pipe(Effect.provide(CloudflareLive), Effect.runPromise);
 ```
 
-### Errors are part of each method's type
+### Errors
 
 Each method fails with the error responses its operation declares, with their
 bodies decoded and typed. Cloudflare declares its 4XX responses, so:
@@ -55,11 +55,11 @@ api.kv.namespaces.get({ accountId, namespaceId }).pipe(
 Asking the live API for a namespace that doesn't exist gives code `10013`,
 "namespace not found", as a typed value rather than a thrown `unknown`.
 
-### Paginated lists are Streams
+### Pagination
 
 Each paginated method gets an `All` twin that returns a `Stream` of every item,
-and fetches pages as the stream is read. Cursors and page numbers are the SDK's
-business:
+and fetches pages as the stream is read. The SDK handles the cursors and page
+numbers:
 
 ```ts
 // Every DNS record of every active zone, four zones at a time.
@@ -71,20 +71,24 @@ api.zones
 api.kv.keys.listAll({ accountId, namespaceId, prefix: 'dog:' }).pipe(Stream.take(3));
 ```
 
-### Cleanup happens, even on Ctrl-C
+### Cleanup
 
-Because calls are Effects, a resource can be scoped: made, used, and deleted
-when the scope closes, however it closes.
+Calls are Effects, so a resource can be scoped: it's deleted when the scope
+closes, whether the program finishes, fails, or is interrupted with Ctrl-C.
 
 ```ts
-const namespace =
-  yield *
-  Effect.acquireRelease(api.kv.namespaces.create({ accountId, title }), (ns) =>
-    api.kv.namespaces.delete({ accountId, namespaceId: ns.id }).pipe(Effect.orDie),
-  );
+const tour = Effect.scoped(
+  Effect.gen(function* () {
+    const api = yield* Api;
+    const namespace = yield* Effect.acquireRelease(api.kv.namespaces.create({ accountId, title }), (ns) =>
+      api.kv.namespaces.delete({ accountId, namespaceId: ns.id }).pipe(Effect.orDie),
+    );
+    // ... use the namespace
+  }),
+);
 ```
 
-### Tests need no HTTP
+### Testing
 
 App code depends on `Api`, not on `fetch`, so a test provides a fake one.
 `Api.layerTest` fakes the methods you stub, and anything else fails, naming its
@@ -98,7 +102,7 @@ const Fake = Api.layerTest({
 program.pipe(Effect.provide(Fake));
 ```
 
-### And some defaults worth having
+### Other details
 
 - **Retries** (`retry: true`) only repeat requests that are safe to repeat:
   GET, PUT, DELETE, or a POST with an `Idempotency-Key`. They wait for
