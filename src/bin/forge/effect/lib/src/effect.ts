@@ -9,7 +9,7 @@
  * clients come from Effect.
  */
 
-import { Array as Arr, Data, Effect } from 'effect';
+import { Array as Arr, Cause, Data, Duration, Effect } from 'effect';
 import {
   Headers as HttpHeaders,
   HttpClient,
@@ -145,6 +145,35 @@ export interface ClientOptions {
    * Query parameters sent with every request.
    */
   readonly query?: URLSearchParams;
+  /**
+   * Whether, and how, requests that are safe to send again are retried
+   * after a transient failure. Not by default.
+   */
+  readonly retry?: boolean | RetryOptions;
+}
+
+/**
+ * How a client retries a request that is safe to send again: one whose
+ * method is idempotent (GET, HEAD, OPTIONS, PUT, DELETE, TRACE), or that has
+ * an `Idempotency-Key` header. It is retried after a transport error or a
+ * timeout, or a 408, 429, 500, 502, 503 or 504 response, and authenticated
+ * again each time.
+ */
+export interface RetryOptions {
+  /**
+   * How many times a request is sent again. 2 by default.
+   */
+  readonly times?: number;
+  /**
+   * The wait before the first retry, which doubles for each one after it,
+   * when the response has no `Retry-After`. 250 milliseconds by default.
+   */
+  readonly delay?: Duration.Input;
+  /**
+   * The longest `Retry-After` the client waits for. A response that asks for
+   * longer is not retried. 60 seconds by default.
+   */
+  readonly maxRetryAfter?: Duration.Input;
 }
 
 /**
@@ -257,26 +286,152 @@ export class EffectTransport {
     const name = `${operation.method} ${operation.route}`;
     const execute = (req: HttpClientRequest.HttpClientRequest) =>
       this.#client.execute(req).pipe(Effect.provideService(HttpClient.SpanNameGenerator, () => name));
-    const auth = this.#options.auth;
-    if (auth === undefined || !authenticate) {
-      return execute(request);
+    const auth = authenticate ? this.#options.auth : undefined;
+    let sent: Effect.Effect<HttpClientResponse.HttpClientResponse, ClientError> = execute(request);
+    if (auth !== undefined) {
+      const attempt = Effect.flatMap(
+        Effect.suspend(() => auth.authenticate(request)),
+        execute,
+      );
+      const refresh = auth.refresh;
+      sent =
+        refresh === undefined
+          ? attempt
+          : Effect.flatMap(attempt, (response) =>
+              response.status === 401 ? Effect.andThen(refresh, attempt) : Effect.succeed(response),
+            );
     }
-    const attempt = Effect.flatMap(
-      Effect.suspend(() => auth.authenticate(request)),
-      execute,
-    );
-    const refresh = auth.refresh;
-    const sent =
-      refresh === undefined
-        ? attempt
-        : Effect.flatMap(attempt, (response) =>
-            response.status === 401 ? Effect.andThen(refresh, attempt) : Effect.succeed(response),
-          );
-    const redacted = auth.redactedHeaders;
+    const retry = this.#options.retry;
+    if (retry !== undefined && retry !== false && safeToRepeat(request)) {
+      sent = retrying(sent, retry === true ? {} : retry);
+    }
+    const redacted = auth?.redactedHeaders;
     return redacted === undefined || redacted.length === 0
       ? sent
       : sent.pipe(Effect.updateService(HttpHeaders.CurrentRedactedNames, Arr.appendAll(redacted)));
   }
+}
+
+/**
+ * Stubs of some of the methods of a client, for a fake one in tests: each
+ * is a function of the method's type, and each group takes stubs of its own.
+ */
+export type Stubs<C> = {
+  readonly [K in keyof C]?: C[K] extends (...args: never[]) => unknown ? C[K] : Stubs<C[K]>;
+};
+
+/**
+ * Returns the client that `bind` makes with `stubs` in place of its
+ * methods. A method that isn't stubbed dies, naming its operation, as does
+ * the Stream of a paginated one, so a test fails where it calls something it
+ * didn't expect.
+ */
+export function stub<C extends object>(bind: (transport: EffectTransport) => C, stubs: Stubs<C>): C {
+  return merge(bind(new Unstubbed()), stubs);
+}
+
+// A transport that sends nothing: each operation dies.
+class Unstubbed extends EffectTransport {
+  constructor() {
+    super(
+      HttpClient.make(() => Effect.die(new Error('a fake client sends nothing'))),
+      { baseUrl: 'https://unstubbed.invalid' },
+    );
+  }
+
+  override send<T, E extends ClientError = ClientError>(operation: Operation): Effect.Effect<T, E> {
+    return Effect.die(new Error(`${operation.method} ${operation.route} isn't stubbed`));
+  }
+}
+
+// Returns `client` with `stubs` in place of its members. Groups are merged
+// the first time they are read, as bind makes them.
+function merge<C extends object>(client: C, stubs: Stubs<C>): C {
+  const merged: object =
+    typeof client === 'function' ? (...args: unknown[]) => (client as (...args: unknown[]) => unknown)(...args) : {};
+  for (const key of Object.keys(client)) {
+    Object.defineProperty(merged, key, {
+      enumerable: true,
+      get: () => (client as Record<string, unknown>)[key],
+      configurable: true,
+    });
+  }
+  for (const [key, value] of Object.entries(stubs as Record<string, unknown>)) {
+    if (value === undefined) {
+      continue;
+    }
+    if (typeof value === 'function') {
+      Object.defineProperty(merged, key, { enumerable: true, value, configurable: true });
+      continue;
+    }
+    let group: object | undefined;
+    Object.defineProperty(merged, key, {
+      enumerable: true,
+      get: () => (group ??= merge((client as Record<string, object>)[key]!, value as Stubs<object>)),
+      configurable: true,
+    });
+  }
+  return merged as C;
+}
+
+const idempotentMethods = new Set(['GET', 'HEAD', 'OPTIONS', 'PUT', 'DELETE', 'TRACE']);
+
+// The statuses of responses that may pass on another try, as Effect's
+// HttpClient.retryTransient has them.
+const transientStatuses = new Set([408, 429, 500, 502, 503, 504]);
+
+function safeToRepeat(request: HttpClientRequest.HttpClientRequest): boolean {
+  return idempotentMethods.has(request.method) || request.headers['idempotency-key'] !== undefined;
+}
+
+// Sends again what `send` sends while it fails in a way that may pass on
+// another try, at most `times` more times, after its Retry-After or a wait
+// that doubles each time. The last response is returned as it is.
+function retrying(
+  send: Effect.Effect<HttpClientResponse.HttpClientResponse, ClientError>,
+  options: RetryOptions,
+): Effect.Effect<HttpClientResponse.HttpClientResponse, ClientError> {
+  const times = options.times ?? 2;
+  const delay = Duration.toMillis(options.delay ?? 250);
+  const maxRetryAfter = Duration.toMillis(options.maxRetryAfter ?? Duration.seconds(60));
+  const wait = (attempt: number, after: number | undefined) =>
+    Effect.sleep(Duration.millis(after ?? delay * 2 ** attempt));
+  const loop = (attempt: number): Effect.Effect<HttpClientResponse.HttpClientResponse, ClientError> =>
+    Effect.matchEffect(send, {
+      onFailure: (error) =>
+        attempt < times && transient(error)
+          ? Effect.andThen(wait(attempt, undefined), loop(attempt + 1))
+          : Effect.fail(error),
+      onSuccess: (response) => {
+        const after = retryAfter(response);
+        if (attempt >= times || !transientStatuses.has(response.status) || (after ?? 0) > maxRetryAfter) {
+          return Effect.succeed(response);
+        }
+        return Effect.andThen(wait(attempt, after), loop(attempt + 1));
+      },
+    });
+  return loop(0);
+}
+
+// Reports whether an error may pass on another try: the request didn't get
+// a response, or timed out.
+function transient(error: ClientError): boolean {
+  return (error._tag === 'HttpClientError' && error.reason._tag === 'TransportError') || Cause.isTimeoutError(error);
+}
+
+// Returns the milliseconds a response's Retry-After asks the client to
+// wait, in seconds or as an HTTP date.
+function retryAfter(response: HttpClientResponse.HttpClientResponse): number | undefined {
+  const value = response.headers['retry-after'];
+  if (value === undefined || value.trim() === '') {
+    return undefined;
+  }
+  const seconds = Number(value);
+  if (Number.isFinite(seconds)) {
+    return Math.max(0, seconds * 1000);
+  }
+  const date = Date.parse(value);
+  return Number.isNaN(date) ? undefined : Math.max(0, date - Date.now());
 }
 
 // What follows is the Promise client's Transport, with Effect in place of

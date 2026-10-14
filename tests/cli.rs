@@ -161,6 +161,8 @@ fn effect() {
             "EffectTransport,",
             r#"export type { Operation } from "./_/index.js";"#,
             "Effect.map(HttpClient.HttpClient, (client) => Api.of(bind(new EffectTransport(client, options))));",
+            "static readonly layerTest = (stubs: Stubs<Client>): Layer.Layer<Api> =>",
+            "Layer.succeed(Api, Api.of(stub(bind, stubs)));",
         ],
     );
     expect(

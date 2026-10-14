@@ -140,7 +140,7 @@ fn effect(node: Node<'_>, name: Option<&str>, security: &Security) -> Result<TsF
         p!(f, r#"export * as Auth from "./_/auth.js";"#);
         p!(
             f,
-            r#"export { ApiError, type ClientError, type ClientOptions, EffectTransport, type Reason, type RequestOptions, type Unexpected } from "./_/effect.js";"#
+            r#"export { ApiError, type ClientError, type ClientOptions, EffectTransport, type Reason, type RequestOptions, type Stubs, type Unexpected } from "./_/effect.js";"#
         );
         p!(f, r#"export type { Operation } from "./_/index.js";"#);
         p!(f);
@@ -512,6 +512,38 @@ fn api(f: &mut TsFile, key: &str, forge: &Forge, security: &Security) {
                 ".succeed(options), ",
                 api,
                 ".make));"
+            );
+        });
+        p!(f);
+        f.doc(
+            "Returns a layer of a fake client, for tests: the stubs answer for the methods they stub, and any other \
+             method dies, naming its operation.",
+        );
+        p!(
+            f,
+            "static readonly layerTest = (stubs: ",
+            EFFECT_RUNTIME.ident("Stubs").ty(),
+            "<",
+            client,
+            ">): ",
+            layer,
+            ".Layer<",
+            api,
+            "> =>"
+        );
+        f.indent(|f| {
+            p!(
+                f,
+                layer,
+                ".succeed(",
+                api,
+                ", ",
+                api,
+                ".of(",
+                EFFECT_RUNTIME.ident("stub"),
+                "(",
+                f.ident("bind"),
+                ", stubs)));"
             );
         });
         let default = security

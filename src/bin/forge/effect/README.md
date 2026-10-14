@@ -154,6 +154,37 @@ const CloudflareLive = Api.layerConfig().pipe(Layer.provide(FetchHttpClient.laye
 const CloudflareLive = Api.layer({ auth: Security.apiToken(token) }).pipe(Layer.provide(FetchHttpClient.layer));
 ```
 
+## Retries
+
+`ClientOptions.retry` retries requests that are safe to send again: those
+whose method is idempotent (`GET`, `HEAD`, `OPTIONS`, `PUT`, `DELETE`), or
+that have an `Idempotency-Key` header. They are retried after a transport
+error or timeout, or a 408, 429, 500, 502, 503 or 504 response, after the
+response's `Retry-After` or a wait that doubles each time, and are
+authenticated again each time, so a signing `Auth` signs each one afresh.
+
+```ts
+Api.layer({ auth, retry: { times: 3, delay: '200 millis', maxRetryAfter: '30 seconds' } });
+Api.layer({ auth, retry: true }); // 2 retries, from 250 milliseconds
+```
+
+`HttpClient.retryTransient` retries every method, `POST` too. For rate
+limits shared across requests, Effect's `HttpClient.withRateLimiter` reads
+the response headers.
+
+## Testing
+
+`Api.layerTest` is a fake client: the stubs answer for the methods they stub,
+typed as the client is, and any other method dies, naming its operation, so
+a test fails where it calls something it didn't expect.
+
+```ts
+const FakeApi = Api.layerTest({
+  pets: { get: ({ petId }) => Effect.succeed({ id: BigInt(petId), name: 'Rex' }) },
+});
+// api.pets.list() dies with "GET /pets isn't stubbed".
+```
+
 ## Pagination
 
 A method with Fern's
