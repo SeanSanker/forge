@@ -10,11 +10,13 @@ use super::runtime;
 use super::types::{js_string, key};
 
 /// Declares the operation of `m`: its HTTP method and route, where its
-/// parameters and body go, and the codecs of its body and responses.
+/// parameters and body go, and the codecs of its body and responses. It is
+/// exported, for clients that send operations with a transport of their
+/// own, such as the Effect clients.
 pub(super) fn operation(f: &mut File, m: Method<'_>, request: &Request<'_>) {
     p!(
         f,
-        "const ",
+        "export const ",
         operation_ident(f, m),
         ": ",
         runtime("Operation").ty(),

@@ -83,3 +83,151 @@ fn ts() {
     );
     std::fs::remove_dir_all(&out).unwrap();
 }
+
+/// A document whose methods page by offset, with a page size, and by
+/// cursor, with a required parameter, and where the method `zones.settings`
+/// shares its name with a group.
+const PAGED: &str = r##"{
+  "openapi": "3.0.3", "info": {"title": "Shop", "version": "1"},
+  "paths": {
+    "/items": {"get": {"x-fern-sdk-group-name": "items", "x-fern-sdk-method-name": "list",
+      "x-fern-pagination": {"offset": "$request.start", "step": "$request.page_size",
+        "results": "$response.data", "has-next-page": "$response.has_more"},
+      "parameters": [{"name": "start", "in": "query", "schema": {"type": "integer"}},
+        {"name": "page_size", "in": "query", "schema": {"type": "integer"}}],
+      "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {
+        "type": "object", "properties": {
+          "data": {"type": "array", "items": {"$ref": "#/components/schemas/Item"}},
+          "has_more": {"type": "boolean"}}}}}}}}},
+    "/events": {"get": {"x-fern-sdk-group-name": "events", "x-fern-sdk-method-name": "list",
+      "x-fern-pagination": {"cursor": "$request.cursor",
+        "next_cursor": "$response.result_info.next_cursor", "results": "$response.result"},
+      "parameters": [{"name": "since", "in": "query", "required": true, "schema": {"type": "string"}},
+        {"name": "cursor", "in": "query", "schema": {"type": "string"}}],
+      "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {
+        "type": "object", "properties": {
+          "result": {"type": "array", "nullable": true, "items": {"$ref": "#/components/schemas/Item"}},
+          "result_info": {"type": "object", "properties": {"next_cursor": {"type": "string"}}}}}}}}}}},
+    "/zones/{zone}/settings": {"get": {"x-fern-sdk-group-name": "zones", "x-fern-sdk-method-name": "settings",
+      "parameters": [{"name": "zone", "in": "path", "required": true, "schema": {"type": "string"}}],
+      "responses": {"200": {"description": "ok"}}}},
+    "/zones/{zone}/settings/{name}": {"get": {"x-fern-sdk-group-name": ["zones", "settings"],
+      "x-fern-sdk-method-name": "get",
+      "parameters": [{"name": "zone", "in": "path", "required": true, "schema": {"type": "string"}},
+        {"name": "name", "in": "path", "required": true, "schema": {"type": "string"}}],
+      "responses": {"200": {"description": "ok"}}}}
+  },
+  "components": {"schemas": {"Item": {"type": "object", "properties": {"id": {"type": "string"}}}}}
+}"##;
+
+#[test]
+fn effect() {
+    let out = std::env::temp_dir().join(format!("forge-cli-effect-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&out);
+    let result = forge(&["-", "--target", "effect", "--out", out.to_str().unwrap()], PAGED);
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    for name in [
+        "index.ts",
+        "client.ts",
+        "effect.ts",
+        "items/client.ts",
+        "items/effect.ts",
+        "zones/settings/effect.ts",
+        "_/index.ts",
+        "_/effect.ts",
+        "_/auth.ts",
+        "_/paginate.ts",
+    ] {
+        assert!(out.join(name).is_file(), "{name} is missing");
+    }
+    let read = |name: &str| std::fs::read_to_string(out.join(name)).unwrap();
+    let expect = |name: &str, snippets: &[&str]| {
+        let text = read(name);
+        for snippet in snippets {
+            assert!(text.contains(snippet), "{name} has no {snippet:?}:\n{text}");
+        }
+    };
+    expect(
+        "effect.ts",
+        &[
+            r#"export * as Auth from "./_/auth.js";"#,
+            r#"export class Api extends Context.Service<Api, Client>()("Shop/Api") {"#,
+            "Effect.map(HttpClient.HttpClient, (client) => Api.of(bind(new EffectTransport(client, options))));",
+        ],
+    );
+    expect(
+        "items/effect.ts",
+        &[
+            "list(request?: ListRequest, options?: RequestOptions): Effect.Effect<ListResponse, ClientError>;",
+            r#"listAll(request?: Omit<ListRequest, "start">, options?: RequestOptions): Stream.Stream<Item, ClientError>;"#,
+            "listAll: (request, options) => paginate(transport, ListOperation, ListPagination, request, options),",
+            r#"{ kind: "offset", offset: "start", results: ["data"], step: "pageSize", hasNextPage: ["hasMore"] }"#,
+        ],
+    );
+    expect(
+        "events/effect.ts",
+        &[
+            r#"listAll(request: Omit<ListRequest, "cursor">, options?: RequestOptions): Stream.Stream<Item, ClientError>;"#,
+            r#"{ kind: "cursor", cursor: "cursor", nextCursor: ["resultInfo", "nextCursor"], results: ["result"] }"#,
+        ],
+    );
+    expect(
+        "zones/effect.ts",
+        &[
+            "readonly settings: ((request: SettingsRequest, options?: RequestOptions) => Effect.Effect<SettingsResponse, ClientError>) & SettingsClient;",
+            "bindSettings(transport),",
+        ],
+    );
+    expect("items/client.ts", &["export const ListOperation: Operation = {"]);
+    std::fs::remove_dir_all(&out).unwrap();
+}
+
+/// A document with a method, `a.list`, that pages as PAGINATION says.
+const PAGINATION_ERROR: &str = r#"{
+  "openapi": "3.0.3", "info": {"title": "t", "version": "1"},
+  "paths": {"/a": {"get": {"x-fern-sdk-group-name": "a", "x-fern-sdk-method-name": "list",
+    "x-fern-pagination": PAGINATION,
+    "parameters": [{"name": "page", "in": "query", "schema": {"type": "integer"}}],
+    "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {
+      "type": "object", "properties": {
+        "data": {"type": "array", "items": {"type": "string"}}, "total": {"type": "integer"}}}}}}}}}}
+}"#;
+
+#[test]
+fn effect_pagination_errors() {
+    for (pagination, message) in [
+        ("true", "only an object of cursor or offset pagination is covered"),
+        (
+            r#"{"next_uri": "$response.next", "results": "$response.data"}"#,
+            "only cursor and offset pagination are covered",
+        ),
+        (r#"{"offset": "$request.page"}"#, "results is missing"),
+        (
+            r#"{"offset": "page", "results": "$response.data"}"#,
+            "offset must start with $request.",
+        ),
+        (
+            r#"{"offset": "$request.nope", "results": "$response.data"}"#,
+            "offset names $request.nope, which is not a parameter of the request",
+        ),
+        (
+            r#"{"offset": "$request.page", "results": "$response.nope"}"#,
+            "results names $response.nope, which is not a field of the response",
+        ),
+        (
+            r#"{"offset": "$request.page", "results": "$response.total"}"#,
+            "results names $response.total, which is not an array",
+        ),
+        (
+            r#"{"cursor": "$request.page", "results": "$response.data"}"#,
+            "next_cursor is missing",
+        ),
+    ] {
+        let spec = PAGINATION_ERROR.replace("PAGINATION", pagination);
+        let err = failure(forge(&["-", "--target", "effect", "--out", "unused"], &spec));
+        assert!(
+            err.contains(&format!("a.list: x-fern-pagination: {message}")),
+            "{pagination}: {err}"
+        );
+    }
+}

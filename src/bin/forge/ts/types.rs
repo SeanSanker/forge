@@ -8,7 +8,7 @@ use forge::{EnumValue, Field, Model, Number, Object, Scalar, Type};
 /// Where a type is printed, which decides whether a union or an
 /// intersection needs parentheses. An intersection inside a union has them.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum Prec {
+pub(crate) enum Prec {
     Top,
     Intersection,
     Array,
@@ -19,7 +19,7 @@ pub(super) enum Prec {
 /// ```text
 /// p!(f, "export type ", m, " = ", typ(m.ty(), Prec::Top), ";");
 /// ```
-pub(super) fn typ(t: Type<'_>, prec: Prec) -> Fragment {
+pub(crate) fn typ(t: Type<'_>, prec: Prec) -> Fragment {
     match t {
         Type::Scalar(scalar) => frag!(scalar_type(scalar)),
         Type::Model(m) => frag!(Ident::model(m).ty()),
@@ -116,7 +116,7 @@ pub(super) fn member(field: Field<'_>) -> Fragment {
 
 /// Returns the documentation of a declaration, with `@deprecated` after it
 /// when it is deprecated.
-pub(super) fn doc(text: &str, deprecated: bool) -> String {
+pub(crate) fn doc(text: &str, deprecated: bool) -> String {
     if !deprecated {
         return text.to_owned();
     }
@@ -150,7 +150,7 @@ pub(super) fn has_fields(t: Type<'_>) -> bool {
 /// Reports whether the SDK keeps a property: its name is valid
 /// (specs/02-naming.md). An object that leaves out a property allows other
 /// keys.
-pub(super) fn kept(field: Field<'_>) -> bool {
+pub(crate) fn kept(field: Field<'_>) -> bool {
     valid_name(field.wire_name())
 }
 
@@ -167,7 +167,7 @@ pub(super) fn object_like<'f>(t: Type<'f>, seen: &mut HashSet<Model<'f>>) -> boo
 }
 
 /// Reports whether an empty object is a value of `t`.
-pub(super) fn all_optional(t: Type<'_>) -> bool {
+pub(crate) fn all_optional(t: Type<'_>) -> bool {
     fn walk<'f>(t: Type<'f>, seen: &mut HashSet<Model<'f>>) -> bool {
         match t {
             Type::Object(object) => !object.fields().any(|f| kept(f) && f.is_required()),
@@ -183,7 +183,7 @@ pub(super) fn all_optional(t: Type<'_>) -> bool {
 
 /// Prefixes `s` with `_` if it starts with a digit, so it's a valid
 /// identifier.
-pub(super) fn identifier(s: String) -> String {
+pub(crate) fn identifier(s: String) -> String {
     if s.starts_with(|c: char| c.is_ascii_digit()) {
         format!("_{s}")
     } else {
@@ -216,7 +216,7 @@ pub(super) fn is_identifier(s: &str) -> bool {
 }
 
 /// Returns a property name, quoted when it is not an identifier.
-pub(super) fn key(name: &str) -> String {
+pub(crate) fn key(name: &str) -> String {
     if is_identifier(name) {
         name.to_owned()
     } else {
@@ -226,7 +226,7 @@ pub(super) fn key(name: &str) -> String {
 
 /// Returns `s` as a string literal, escaped as Go's `encoding/json` does
 /// without HTML escaping.
-pub(super) fn js_string(s: &str) -> String {
+pub(crate) fn js_string(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('"');
     for c in s.chars() {

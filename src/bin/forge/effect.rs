@@ -1,0 +1,696 @@
+//! The Effect SDK generator: the TypeScript SDK, with an Effect client next
+//! to the Promise client of each group.
+//!
+//! Each group's effect.ts declares its Client, whose methods return an
+//! Effect, and bind, which sends the operations of its client.ts with an
+//! EffectTransport. A method with `x-fern-pagination` also gets a twin,
+//! named with `All`, that returns a Stream of every item of every page.
+//! The root's effect.ts is the entry point of the Effect SDK: it also
+//! declares Api, the client as an Effect service. The runtime of the Effect
+//! clients goes in `_/`, next to the TypeScript runtime.
+
+use std::collections::{HashMap, HashSet};
+
+use forge::ts::{File as TsFile, Fragment, Ident, Module, PREAMBLE, frag, join, p};
+use forge::{Err, Forge, Group, Method, Model, Plugin, Type};
+
+use crate::ts::client::{
+    Request, group_name, method_doc, method_name, operation_name, request_name, response, response_name, skipped,
+};
+use crate::ts::types::{Prec, all_optional, doc, identifier, js_string, kept, key, typ};
+use crate::ts::{self, File, Node, RUNTIME_DIR};
+
+/// Generates a TypeScript SDK with an Effect client.
+pub struct Generator;
+
+impl Plugin for Generator {
+    type File = File;
+
+    /// Returns the files of the TypeScript SDK's root, the root's
+    /// effect.ts, and the Effect runtime.
+    fn generate(&self, forge: &Forge) -> Result<impl Iterator<Item = File>, Err> {
+        let mut files: Vec<File> = ts::Generator.generate(forge)?.collect();
+        files.push(File::Ts(effect(Node::Root(forge))?));
+        files.extend(RUNTIME.iter().map(|&(path, source)| File::Runtime {
+            path: RUNTIME_DIR.sub(path).as_str().to_owned(),
+            content: format!("{PREAMBLE}{source}"),
+        }));
+        Ok(files.into_iter())
+    }
+
+    /// Returns the files of the TypeScript SDK's group, and its effect.ts.
+    fn generate_group(&self, group: Group<'_>) -> Result<impl Iterator<Item = File>, Err> {
+        let mut files: Vec<File> = ts::Generator.generate_group(group)?.collect();
+        files.push(File::Ts(effect(Node::Group(group))?));
+        Ok(files.into_iter())
+    }
+}
+
+/// The sources of the Effect runtime, by path in lib/src.
+const RUNTIME: [(&str, &str); 3] = [
+    ("auth.ts", include_str!("effect/lib/src/auth.ts")),
+    ("effect.ts", include_str!("effect/lib/src/effect.ts")),
+    ("paginate.ts", include_str!("effect/lib/src/paginate.ts")),
+];
+
+/// The modules of the Effect runtime, and of Effect.
+const EFFECT_RUNTIME: Module = Module::new("_/effect.ts");
+const PAGINATE: Module = Module::new("_/paginate.ts");
+const EFFECT: Module = Module::new("effect");
+const HTTP: Module = Module::new("effect/http");
+
+/// A method of a group's Effect client, and how it pages.
+struct Entry<'f> {
+    method: Method<'f>,
+    request: Request<'f>,
+    pagination: Option<Pagination<'f>>,
+}
+
+/// How a method pages, from its `x-fern-pagination`, with the TypeScript
+/// names of the fields it reads.
+struct Pagination<'f> {
+    /// The request field that picks the page.
+    param: String,
+    /// The path of the items in the response.
+    results: Vec<String>,
+    /// The type of an item.
+    item: Type<'f>,
+    kind: Kind,
+}
+
+enum Kind {
+    /// The response has the cursor of the next page at the path.
+    Cursor { next: Vec<String> },
+    /// The page is picked by a page number, or by the index of its first
+    /// item when `step` names the request field of the page size.
+    Offset {
+        step: Option<String>,
+        has_next_page: Option<Vec<String>>,
+    },
+}
+
+/// Returns the effect.ts of `node`: its Client and bind, then how each
+/// paginated method pages. The root's also declares Api, and exports what
+/// the SDK's users need with it.
+fn effect(node: Node<'_>) -> Result<TsFile, Err> {
+    let groups = node.children();
+    let group_names: HashMap<String, Group<'_>> = groups.iter().map(|&sub| (group_name(sub), sub)).collect();
+    let entries: Vec<Entry<'_>> = node
+        .methods()
+        .into_iter()
+        .filter(|&m| !skipped(m))
+        .map(|m| {
+            let request = Request::new(m);
+            let pagination = pagination(m, &request)?;
+            Ok(Entry {
+                method: m,
+                request,
+                pagination,
+            })
+        })
+        .collect::<Result<_, Err>>()?;
+    check_names(&entries, &group_names)?;
+
+    let mut f = TsFile::new(node.dir().sub("effect.ts"));
+    if let Node::Root(_) = node {
+        p!(f, r#"export * as Auth from "./_/auth.js";"#);
+        p!(
+            f,
+            r#"export { ApiError, type ClientError, type ClientOptions, type RequestOptions } from "./_/effect.js";"#
+        );
+        p!(f);
+    }
+    client_interface(&mut f, &entries, &groups, &group_names);
+    p!(f);
+    bind(&mut f, &entries, &groups, &group_names);
+    for entry in &entries {
+        if let Some(pagination) = &entry.pagination {
+            p!(f);
+            declare_pagination(&mut f, entry.method, pagination);
+        }
+    }
+    if let Node::Root(forge) = node {
+        p!(f);
+        api(&mut f, forge);
+    }
+    Ok(f)
+}
+
+/// Returns an error if the `All` twin of a method is named like another
+/// method or a group.
+fn check_names(entries: &[Entry<'_>], group_names: &HashMap<String, Group<'_>>) -> Result<(), Err> {
+    let names: HashSet<String> = entries.iter().map(|e| method_name(e.method)).collect();
+    for entry in entries {
+        if entry.pagination.is_some() {
+            let all = all_name(entry.method);
+            if names.contains(&all) || group_names.contains_key(&all) {
+                return Err(format!(
+                    "{}: its Stream of every item would be {all}, which is already taken",
+                    method_path(entry.method)
+                )
+                .into());
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Declares the Client of a group: its methods, each followed by its `All`
+/// twin when it pages, then its subgroups. A method and a subgroup with the
+/// same name share the property, which is a function with the members of
+/// the subgroup's Client.
+fn client_interface(
+    f: &mut TsFile,
+    entries: &[Entry<'_>],
+    groups: &[Group<'_>],
+    group_names: &HashMap<String, Group<'_>>,
+) {
+    if entries.is_empty() && groups.is_empty() {
+        p!(f, "export interface ", f.ident("Client"), " {}");
+        return;
+    }
+    p!(f, "export interface ", f.ident("Client"), " {");
+    let mut shared = HashSet::new();
+    f.indent(|f| {
+        for entry in entries {
+            let m = entry.method;
+            f.doc(&doc(&method_doc(m), m.is_deprecated()));
+            let name = method_name(m);
+            let params = frag!(
+                "request",
+                if entry.request.optional() { "?: " } else { ": " },
+                request_ident(m),
+                ", options?: ",
+                request_options()
+            );
+            match group_names.get(&name) {
+                None => p!(f, key(&name), "(", params, "): ", result(m), ";"),
+                Some(&sub) => {
+                    p!(
+                        f,
+                        "readonly ",
+                        key(&name),
+                        ": ((",
+                        params,
+                        ") => ",
+                        result(m),
+                        ") & ",
+                        client_ident(sub),
+                        ";"
+                    );
+                    shared.insert(name.clone());
+                }
+            }
+            if let Some(pagination) = &entry.pagination {
+                let text =
+                    format!("Every item of every page of `{name}`, fetched a page at a time as the stream is read.");
+                f.doc(&doc(&text, m.is_deprecated()));
+                let optional = optional_without(&entry.request, &pagination.param);
+                p!(
+                    f,
+                    key(&all_name(m)),
+                    "(request",
+                    if optional { "?: " } else { ": " },
+                    "Omit<",
+                    request_ident(m),
+                    ", ",
+                    js_string(&pagination.param),
+                    ">, options?: ",
+                    request_options(),
+                    "): ",
+                    EFFECT.ident("Stream").ty(),
+                    ".Stream<",
+                    typ(pagination.item, Prec::Top),
+                    ", ",
+                    client_error(),
+                    ">;"
+                );
+            }
+        }
+        for &sub in groups {
+            let name = group_name(sub);
+            if !shared.contains(&name) {
+                p!(f, "readonly ", key(&name), ": ", client_ident(sub), ";");
+            }
+        }
+    });
+    p!(f, "}");
+}
+
+/// Declares bind, which returns the Client of a group on an
+/// EffectTransport: each method sends its operation, each `All` twin pages
+/// through it, and each subgroup is a getter that binds the subgroup's
+/// Client the first time it is read. A method and a subgroup with the same
+/// name share a getter, of the method with the members of the subgroup's
+/// Client.
+fn bind(f: &mut TsFile, entries: &[Entry<'_>], groups: &[Group<'_>], group_names: &HashMap<String, Group<'_>>) {
+    let shared: HashMap<String, Method<'_>> = entries
+        .iter()
+        .map(|e| (method_name(e.method), e.method))
+        .filter(|(name, _)| group_names.contains_key(name))
+        .collect();
+    p!(
+        f,
+        "export function ",
+        f.ident("bind"),
+        "(transport: ",
+        EFFECT_RUNTIME.ident("EffectTransport").ty(),
+        "): ",
+        f.ident("Client"),
+        " {"
+    );
+    f.indent(|f| {
+        for &sub in groups {
+            let name = group_name(sub);
+            match shared.get(&name) {
+                Some(&m) => {
+                    let method = js_string(&method_name(m));
+                    p!(
+                        f,
+                        "let ",
+                        name,
+                        "Client: ",
+                        f.ident("Client"),
+                        "[",
+                        method,
+                        "] | undefined;"
+                    );
+                }
+                None => p!(f, "let ", name, "Client: ", client_ident(sub), " | undefined;"),
+            }
+        }
+        p!(f, "return {");
+        f.indent(|f| {
+            for entry in entries {
+                let m = entry.method;
+                let name = method_name(m);
+                if !shared.contains_key(&name) {
+                    p!(f, key(&name), ": (request, options) => ", send(m), ",");
+                }
+                if entry.pagination.is_some() {
+                    p!(
+                        f,
+                        key(&all_name(m)),
+                        ": (request, options) => ",
+                        PAGINATE.ident("paginate"),
+                        "(transport, ",
+                        operation_ident(m),
+                        ", ",
+                        f.ident(pagination_name(m)),
+                        ", request, options),"
+                    );
+                }
+            }
+            for &sub in groups {
+                let name = group_name(sub);
+                p!(f, "get ", key(&name), "() {");
+                f.indent(|f| match shared.get(&name) {
+                    Some(&m) => {
+                        p!(f, "return (", name, "Client ??= Object.assign(");
+                        f.indent(|f| {
+                            p!(
+                                f,
+                                "(request: ",
+                                request_ident(m),
+                                ", options?: ",
+                                request_options(),
+                                "): ",
+                                result(m),
+                                " => ",
+                                send(m),
+                                ","
+                            );
+                            p!(f, bind_ident(sub), "(transport),");
+                        });
+                        p!(f, "));");
+                    }
+                    None => p!(f, "return (", name, "Client ??= ", bind_ident(sub), "(transport));"),
+                });
+                p!(f, "},");
+            }
+        });
+        p!(f, "};");
+    });
+    p!(f, "}");
+}
+
+/// Declares how `m` pages, for its `All` twin.
+fn declare_pagination(f: &mut TsFile, m: Method<'_>, pagination: &Pagination<'_>) {
+    let path = |names: &[String]| frag!("[", join(", ", names.iter().map(|n| js_string(n))), "]");
+    let mut members: Vec<Fragment> = Vec::new();
+    match &pagination.kind {
+        Kind::Cursor { next } => {
+            members.push(frag!(r#"kind: "cursor""#));
+            members.push(frag!("cursor: ", js_string(&pagination.param)));
+            members.push(frag!("nextCursor: ", path(next)));
+            members.push(frag!("results: ", path(&pagination.results)));
+        }
+        Kind::Offset { step, has_next_page } => {
+            members.push(frag!(r#"kind: "offset""#));
+            members.push(frag!("offset: ", js_string(&pagination.param)));
+            members.push(frag!("results: ", path(&pagination.results)));
+            if let Some(step) = step {
+                members.push(frag!("step: ", js_string(step)));
+            }
+            if let Some(has_next_page) = has_next_page {
+                members.push(frag!("hasNextPage: ", path(has_next_page)));
+            }
+        }
+    }
+    p!(
+        f,
+        "const ",
+        f.ident(pagination_name(m)),
+        ": ",
+        PAGINATE.ident("Pagination").ty(),
+        " = { ",
+        join(", ", members),
+        " };"
+    );
+}
+
+/// Declares Api, the root's Client as an Effect service, keyed by the
+/// title of the API.
+fn api(f: &mut TsFile, forge: &Forge) {
+    let effect = EFFECT.ident("Effect");
+    let layer = EFFECT.ident("Layer");
+    let http_client = HTTP.ident("HttpClient");
+    let options = EFFECT_RUNTIME.ident("ClientOptions").ty();
+    let api = f.ident("Api");
+    let client = f.ident("Client");
+    f.doc(
+        "The client of the API, as an Effect service. Each method returns an Effect, and sends with the HttpClient \
+         that the client was made with.",
+    );
+    p!(
+        f,
+        "export class ",
+        api,
+        " extends ",
+        EFFECT.ident("Context"),
+        ".Service<",
+        api,
+        ", ",
+        client,
+        ">()(",
+        js_string(&service_key(forge)),
+        ") {"
+    );
+    f.indent(|f| {
+        f.doc("Makes the client with the HttpClient in context.");
+        p!(
+            f,
+            "static readonly make = (options: ",
+            options,
+            "): ",
+            effect,
+            ".Effect<",
+            client,
+            ", never, ",
+            http_client,
+            ".HttpClient> =>"
+        );
+        f.indent(|f| {
+            p!(
+                f,
+                effect,
+                ".map(",
+                http_client,
+                ".HttpClient, (client) => ",
+                api,
+                ".of(",
+                f.ident("bind"),
+                "(new ",
+                EFFECT_RUNTIME.ident("EffectTransport"),
+                "(client, options))));"
+            );
+        });
+        p!(f);
+        f.doc("Returns a layer of the client, from its options or an Effect of them, such as a Config.");
+        p!(f, "static readonly layer = <E = never, R = never>(");
+        f.indent(|f| {
+            p!(f, "options: ", options, " | ", effect, ".Effect<", options, ", E, R>,");
+        });
+        p!(
+            f,
+            "): ",
+            layer,
+            ".Layer<",
+            api,
+            ", E, R | ",
+            http_client,
+            ".HttpClient> =>"
+        );
+        f.indent(|f| {
+            p!(
+                f,
+                layer,
+                ".effect(",
+                api,
+                ", ",
+                effect,
+                ".flatMap(",
+                effect,
+                ".isEffect(options) ? options : ",
+                effect,
+                ".succeed(options), ",
+                api,
+                ".make));"
+            );
+        });
+    });
+    p!(f, "}");
+}
+
+/// Returns the key of the Api service: the title of the API, the first
+/// paragraph of its description, followed by `/Api`.
+fn service_key(forge: &Forge) -> String {
+    let title = forge.description.split("\n\n").next().unwrap_or_default();
+    let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
+    if title.is_empty() {
+        "Api".to_owned()
+    } else {
+        format!("{title}/Api")
+    }
+}
+
+/// Returns how `m` pages, from its `x-fern-pagination`, or `None` when it
+/// has none. Only cursor and offset pagination are covered. The request
+/// field that picks the page must be a parameter, and the paths must name
+/// fields of the one JSON body of the success responses.
+fn pagination<'f>(m: Method<'f>, request: &Request<'f>) -> Result<Option<Pagination<'f>>, Err> {
+    let Some(ext) = m.extension("x-fern-pagination") else {
+        return Ok(None);
+    };
+    let at = format!("{}: x-fern-pagination", method_path(m));
+    if ext.as_object().is_none() {
+        return Err(format!("{at}: only an object of cursor or offset pagination is covered").into());
+    }
+    let get = |name: &str| -> Result<Option<&str>, Err> {
+        match ext.get(name) {
+            None => Ok(None),
+            Some(value) => match value.as_str() {
+                Some(s) => Ok(Some(s)),
+                None => Err(format!("{at}: {name} is not a string").into()),
+            },
+        }
+    };
+    let require =
+        |name: &str| -> Result<&str, Err> { get(name)?.ok_or_else(|| format!("{at}: {name} is missing").into()) };
+
+    let (types, _) = response(m);
+    let [body] = types[..] else {
+        return Err(format!("{at}: the method needs one JSON response body to page through").into());
+    };
+    let response_path = |name: &str, path: &str| -> Result<(Vec<String>, Type<'f>), Err> {
+        let rest = path
+            .strip_prefix("$response.")
+            .ok_or_else(|| format!("{at}: {name} must start with $response."))?;
+        let mut names = Vec::new();
+        let mut ty = body;
+        for part in rest.split('.') {
+            let field = find_field(ty, part, &mut HashSet::new())
+                .ok_or_else(|| format!("{at}: {name} names {path}, which is not a field of the response"))?;
+            names.push(field.name().camel());
+            ty = field.ty();
+        }
+        Ok((names, ty))
+    };
+    let request_field = |name: &str, path: &str| -> Result<String, Err> {
+        let wire = path
+            .strip_prefix("$request.")
+            .ok_or_else(|| format!("{at}: {name} must start with $request."))?;
+        request
+            .params
+            .iter()
+            .find(|param| param.field.wire_name() == wire)
+            .map(|param| param.name.clone())
+            .ok_or_else(|| format!("{at}: {name} names {path}, which is not a parameter of the request").into())
+    };
+
+    let (results, results_ty) = response_path("results", require("results")?)?;
+    let item = elem(results_ty, &mut HashSet::new()).ok_or_else(|| {
+        format!(
+            "{at}: results names {}, which is not an array",
+            require("results").unwrap_or("")
+        )
+    })?;
+    let (param, kind) = if let Some(cursor) = get("cursor")? {
+        let (next, _) = response_path("next_cursor", require("next_cursor")?)?;
+        (request_field("cursor", cursor)?, Kind::Cursor { next })
+    } else if let Some(offset) = get("offset")? {
+        let step = get("step")?.map(|step| request_field("step", step)).transpose()?;
+        let has_next_page = get("has-next-page")?
+            .map(|path| response_path("has-next-page", path).map(|(names, _)| names))
+            .transpose()?;
+        (request_field("offset", offset)?, Kind::Offset { step, has_next_page })
+    } else {
+        return Err(format!("{at}: only cursor and offset pagination are covered").into());
+    };
+    Ok(Some(Pagination {
+        param,
+        results,
+        item,
+        kind,
+    }))
+}
+
+/// Returns the field of `t` with the wire name `wire`: of an object, the
+/// model of one, or a member of a union or an intersection. `seen` has the
+/// models already followed.
+fn find_field<'f>(t: Type<'f>, wire: &str, seen: &mut HashSet<Model<'f>>) -> Option<forge::Field<'f>> {
+    match t {
+        Type::Object(object) => object.fields().find(|&field| kept(field) && field.wire_name() == wire),
+        Type::Model(m) if seen.insert(m) => find_field(m.ty(), wire, seen),
+        Type::Union(union) => union.members().find_map(|member| find_field(member, wire, seen)),
+        Type::Intersection(intersection) => intersection.members().find_map(|member| find_field(member, wire, seen)),
+        _ => None,
+    }
+}
+
+/// Returns the type of the items of `t`, when `t` is an array, the model
+/// of one, or a union of one with null.
+fn elem<'f>(t: Type<'f>, seen: &mut HashSet<Model<'f>>) -> Option<Type<'f>> {
+    match t {
+        Type::Array(array) => Some(array.elem()),
+        Type::Model(m) if seen.insert(m) => elem(m.ty(), seen),
+        Type::Union(union) => {
+            let mut members = union
+                .members()
+                .filter(|&member| !matches!(member, Type::Scalar(forge::Scalar::Null)));
+            match (members.next(), members.next()) {
+                (Some(member), None) => elem(member, seen),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Reports whether the request of a method can be left out once its field
+/// `param` is: no other parameter is required, and an empty object is a
+/// body.
+fn optional_without(request: &Request<'_>, param: &str) -> bool {
+    let params = !request.params.iter().any(|p| p.name != param && p.field.is_required());
+    let body = match &request.body {
+        None => true,
+        Some(body) if request.flat => all_optional(body.ty),
+        Some(body) => !body.required,
+    };
+    params && body
+}
+
+/// Returns what `m` returns: an Effect of its response.
+fn result(m: Method<'_>) -> Fragment {
+    frag!(
+        EFFECT.ident("Effect").ty(),
+        ".Effect<",
+        response_ident(m),
+        ", ",
+        client_error(),
+        ">"
+    )
+}
+
+/// Returns the call that sends the operation of `m`.
+fn send(m: Method<'_>) -> Fragment {
+    frag!("transport.send(", operation_ident(m), ", request, options)")
+}
+
+fn client_error() -> Ident {
+    EFFECT_RUNTIME.ident("ClientError").ty()
+}
+
+fn request_options() -> Ident {
+    EFFECT_RUNTIME.ident("RequestOptions").ty()
+}
+
+/// Returns the request and response types and the operation of `m`, from
+/// the client.ts of its group.
+fn request_ident(m: Method<'_>) -> Ident {
+    client_module(m).ident(request_name(m)).ty()
+}
+
+fn response_ident(m: Method<'_>) -> Ident {
+    client_module(m).ident(response_name(m)).ty()
+}
+
+fn operation_ident(m: Method<'_>) -> Ident {
+    client_module(m).ident(operation_name(m))
+}
+
+fn client_module(m: Method<'_>) -> Module {
+    Module::group(m.group()).sub("client.ts")
+}
+
+/// Returns the bind of group `g`'s Effect client, imported under the name
+/// of the group.
+fn bind_ident(g: Group<'_>) -> Ident {
+    let alias = format!("bind{}", identifier(g.name().pascal()));
+    Module::group(g).sub("effect.ts").ident("bind").alias(alias)
+}
+
+/// Returns the Client of group `g`'s Effect client, imported under the name
+/// of the group.
+fn client_ident(g: Group<'_>) -> Ident {
+    let alias = format!("{}Client", identifier(g.name().pascal()));
+    Module::group(g).sub("effect.ts").ident("Client").ty().alias(alias)
+}
+
+/// Returns the property of the `All` twin of `m`.
+fn all_name(m: Method<'_>) -> String {
+    format!("{}All", method_name(m))
+}
+
+/// Returns the name of how `m` pages.
+fn pagination_name(m: Method<'_>) -> String {
+    format!("{}Pagination", identifier(m.name().pascal()))
+}
+
+/// Returns the path of `m` in the client, such as `pets.list`, for errors.
+fn method_path(m: Method<'_>) -> String {
+    let mut parts: Vec<String> = m.group().path().map(|name| name.camel()).collect();
+    parts.push(method_name(m));
+    parts.join(".")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::Path;
+
+    use super::RUNTIME;
+
+    /// Every source of the Effect runtime is embedded.
+    #[test]
+    fn runtime_is_complete() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/forge/effect/lib/src");
+        let mut paths: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        paths.sort();
+        let embedded: Vec<&str> = RUNTIME.iter().map(|&(path, _)| path).collect();
+        assert_eq!(paths, embedded);
+    }
+}

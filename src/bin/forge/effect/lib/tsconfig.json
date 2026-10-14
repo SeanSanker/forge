@@ -1,0 +1,29 @@
+{
+  // Checks the runtime against the web platform alone, as the generated
+  // clients run in browsers and servers alike. In an SDK, these files sit
+  // in `_/` next to the TypeScript runtime, which rootDirs stands in for.
+  "compilerOptions": {
+    "target": "esnext",
+    "lib": ["esnext", "dom"],
+    "types": [],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "rootDirs": ["src", "../../ts/lib/src"],
+    "noEmit": true,
+    "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "noUncheckedIndexedAccess": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noImplicitReturns": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "isolatedModules": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true
+  },
+  "include": ["src"]
+}

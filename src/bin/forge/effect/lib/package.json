@@ -1,0 +1,19 @@
+{
+  "name": "@internal/effect-lib",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The runtime that the generated Effect clients import, next to the TypeScript runtime.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.test.json",
+    "test": "node --harmony-temporal --import ./test/register.ts --test \"test/**/*.test.ts\""
+  },
+  "devDependencies": {
+    "@types/node": "24.19.0",
+    "effect": "4.0.2",
+    "typescript": "7.0.2"
+  },
+  "engines": {
+    "node": ">=26"
+  }
+}

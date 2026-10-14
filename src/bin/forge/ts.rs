@@ -9,12 +9,12 @@ use std::borrow::Cow;
 use forge::ts::{self, Ident, Module, PREAMBLE};
 use forge::{Err, Forge, Group, Method, Model, Plugin};
 
-mod client;
+pub(crate) mod client;
 mod codec;
 mod index;
 mod models;
 mod operation;
-mod types;
+pub(crate) mod types;
 
 /// Generates a TypeScript SDK.
 pub struct Generator;
@@ -79,14 +79,14 @@ impl forge::File for File {
 // `Plugin::generate` could pass in. Then every function here takes a
 // `Group`.
 #[derive(Clone, Copy)]
-enum Node<'f> {
+pub(crate) enum Node<'f> {
     Root(&'f Forge),
     Group(Group<'f>),
 }
 
 impl<'f> Node<'f> {
     /// Returns the directory of the node's files.
-    fn dir(self) -> Module {
+    pub(crate) fn dir(self) -> Module {
         match self {
             Node::Root(_) => Module::ROOT,
             Node::Group(group) => Module::group(group),
@@ -112,7 +112,7 @@ impl<'f> Node<'f> {
 
     /// Returns the methods directly in the node, sorted by name. The root
     /// has none.
-    fn methods(self) -> Vec<Method<'f>> {
+    pub(crate) fn methods(self) -> Vec<Method<'f>> {
         match self {
             Node::Root(_) => Vec::new(),
             Node::Group(group) => group.methods().collect(),
@@ -120,7 +120,7 @@ impl<'f> Node<'f> {
     }
 
     /// Returns the groups directly in the node, sorted by name.
-    fn children(self) -> Vec<Group<'f>> {
+    pub(crate) fn children(self) -> Vec<Group<'f>> {
         match self {
             Node::Root(forge) => forge.groups().filter(|g| g.parent().is_none()).collect(),
             Node::Group(group) => group.children().collect(),
@@ -140,7 +140,7 @@ impl<'f> Node<'f> {
 }
 
 /// The directory of the runtime library.
-const RUNTIME_DIR: Module = Module::new("_");
+pub(crate) const RUNTIME_DIR: Module = Module::new("_");
 
 /// The module of the runtime library that exports it.
 const RUNTIME_INDEX: Module = Module::new("_/index.ts");

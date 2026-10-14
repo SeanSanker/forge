@@ -2,6 +2,7 @@
 //!
 //! ```text
 //! forge openapi.json --target ts --out sdk
+//! forge openapi.json --target effect --out sdk
 //! forge openapi.json --target wasm://plugin.wasm --out sdk
 //! ```
 
@@ -13,6 +14,7 @@ use std::process::ExitCode;
 use clap::Parser;
 use forge::{Err, Forge};
 
+mod effect;
 mod ts;
 
 /// Generates an SDK from an OpenAPI document.
@@ -21,8 +23,9 @@ mod ts;
 struct Args {
     /// The OpenAPI JSON document, or - to read it from standard input.
     spec: PathBuf,
-    /// The language of the SDK: `ts` for TypeScript, or `wasm://PATH` for
-    /// the plugin compiled to a WebAssembly component at PATH.
+    /// The language of the SDK: `ts` for TypeScript, `effect` for
+    /// TypeScript with an Effect client, or `wasm://PATH` for the plugin
+    /// compiled to a WebAssembly component at PATH.
     #[arg(long, value_parser = Target::parse)]
     target: Target,
     /// The directory to write the SDK to.
@@ -35,6 +38,8 @@ struct Args {
 enum Target {
     /// The TypeScript generator.
     Ts,
+    /// The TypeScript generator, with an Effect client.
+    Effect,
     /// A plugin compiled to a WebAssembly component, at the path.
     #[cfg(feature = "wasm")]
     Wasm(PathBuf),
@@ -42,11 +47,13 @@ enum Target {
 
 impl Target {
     fn parse(s: &str) -> Result<Target, String> {
-        if s == "ts" {
-            return Ok(Target::Ts);
+        match s {
+            "ts" => return Ok(Target::Ts),
+            "effect" => return Ok(Target::Effect),
+            _ => {}
         }
         let Some(path) = s.strip_prefix("wasm://") else {
-            return Err("possible values: ts, wasm://PATH".to_owned());
+            return Err("possible values: ts, effect, wasm://PATH".to_owned());
         };
         if path.is_empty() {
             return Err("wasm:// needs the path of a plugin, as in wasm://plugin.wasm".to_owned());
@@ -74,6 +81,10 @@ fn run(args: Args) -> Result<(), Err> {
         Target::Ts => {
             let forge = read(&args.spec)?;
             forge::write(&args.out, forge::run(&forge, &ts::Generator)?)
+        }
+        Target::Effect => {
+            let forge = read(&args.spec)?;
+            forge::write(&args.out, forge::run(&forge, &effect::Generator)?)
         }
         #[cfg(feature = "wasm")]
         Target::Wasm(path) => {
