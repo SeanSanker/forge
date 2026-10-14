@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { Effect, Stream } from 'effect';
+import { Cause, Effect, Stream } from 'effect';
 import type { HttpClient } from 'effect/http';
 
+import * as Auth from '../src/auth.js';
 import { EffectTransport } from '../src/effect.js';
 import type { Operation } from '../src/index.js';
 import { type Pagination, paginate } from '../src/paginate.js';
@@ -141,4 +142,71 @@ test('a failed page fails the stream, after the items before it', async () => {
 
   assert.deepEqual(seen, [1, 2]);
   assert.equal(error._tag, 'ApiError');
+});
+
+test('uri: follows the next link, absolute or relative, until there is none', async () => {
+  const pages = [
+    { data: things(1, 2), next: 'https://api.test/things?after=2' },
+    { data: things(3, 2), next: '/things?after=4' },
+    { data: things(5, 1), next: null },
+  ];
+  const { sent, client } = mockWith((_, i) => json(200, pages[i]));
+  const items = await all<{ id: number }>(client, { kind: 'uri', next: ['next'], results: ['data'] }, { limit: 2 });
+
+  assert.deepEqual(
+    items.map((t) => t.id),
+    [1, 2, 3, 4, 5],
+  );
+  assert.deepEqual(
+    sent.map((s) => s.url),
+    ['https://api.test/things?limit=2', 'https://api.test/things?after=2', 'https://api.test/things?after=4'],
+  );
+});
+
+test('path: a next path follows the base URL, and a link that does not move stops', async () => {
+  const pages = [
+    { data: things(1, 1), next: '/things?after=1' },
+    { data: things(2, 1), next: '/things?after=1' },
+  ];
+  const { sent, client } = mockWith((_, i) => json(200, pages[i]));
+  const transport = new EffectTransport(client, { baseUrl: 'https://api.test/v1' });
+  const items = await Effect.runPromise(
+    Stream.runCollect(
+      paginate<{ id: number }>(
+        transport,
+        operation,
+        { kind: 'path', next: ['next'], results: ['data'] },
+        {},
+        undefined,
+      ),
+    ),
+  );
+
+  assert.deepEqual(
+    items.map((t) => t.id),
+    [1, 2],
+  );
+  assert.deepEqual(
+    sent.map((s) => s.url),
+    ['https://api.test/v1/things', 'https://api.test/v1/things?after=1'],
+  );
+});
+
+test('uri: a link to another origin is not followed, so credentials stay put', async () => {
+  const { sent, client } = mockWith(() =>
+    json(200, { data: things(1, 1), next: 'https://elsewhere.test/things?page=2' }),
+  );
+  const transport = new EffectTransport(client, { baseUrl: 'https://api.test', auth: Auth.bearer('t1') });
+  const exit = await Effect.runPromiseExit(
+    Stream.runCollect(
+      paginate(transport, operation, { kind: 'uri', next: ['next'], results: ['data'] }, {}, undefined),
+    ),
+  );
+
+  assert.equal(exit._tag, 'Failure');
+  assert.match(String(Cause.squash((exit as { cause: Cause.Cause<unknown> }).cause)), /elsewhere\.test/);
+  assert.deepEqual(
+    sent.map((s) => new URL(s.url).origin),
+    ['https://api.test'],
+  );
 });

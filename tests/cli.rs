@@ -211,10 +211,21 @@ const PAGINATION_ERROR: &str = r#"{
 #[test]
 fn effect_pagination_errors() {
     for (pagination, message) in [
-        ("true", "only an object of cursor or offset pagination is covered"),
         (
-            r#"{"next_uri": "$response.next", "results": "$response.data"}"#,
-            "only cursor and offset pagination are covered",
+            "true",
+            "only an object of cursor, offset, next_uri or next_path pagination is covered",
+        ),
+        (
+            r#"{"results": "$response.data"}"#,
+            "only cursor, offset, next_uri and next_path pagination are covered",
+        ),
+        (
+            r#"{"next_uri": "$request.page", "results": "$response.data"}"#,
+            "next_uri must start with $response.",
+        ),
+        (
+            r#"{"next_path": "$response.nope", "results": "$response.data"}"#,
+            "next_path names $response.nope, which is not a field of the response",
         ),
         (r#"{"offset": "$request.page"}"#, "results is missing"),
         (
@@ -245,6 +256,49 @@ fn effect_pagination_errors() {
             "{pagination}: {err}"
         );
     }
+}
+
+const LINKED: &str = r#"{
+  "openapi": "3.0.3", "info": {"title": "t", "version": "1"},
+  "paths": {
+    "/orders": {"get": {"x-fern-sdk-group-name": "orders", "x-fern-sdk-method-name": "list",
+      "x-fern-pagination": {"next_uri": "$response.links.next", "results": "$response.data"},
+      "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {
+        "type": "object", "properties": {
+          "data": {"type": "array", "items": {"type": "string"}},
+          "links": {"type": "object", "properties": {"next": {"type": "string"}}}}}}}}}}},
+    "/logs": {"get": {"x-fern-sdk-group-name": "logs", "x-fern-sdk-method-name": "list",
+      "x-fern-pagination": {"next_path": "$response.next_page", "results": "$response.data"},
+      "parameters": [{"name": "since", "in": "query", "required": true, "schema": {"type": "string"}}],
+      "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {
+        "type": "object", "properties": {
+          "data": {"type": "array", "items": {"type": "integer"}},
+          "next_page": {"type": "string"}}}}}}}}}
+  }
+}"#;
+
+#[test]
+fn effect_link_pagination() {
+    let out = std::env::temp_dir().join(format!("forge-cli-effect-link-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&out);
+    let result = forge(&["-", "--target", "effect", "--out", out.to_str().unwrap()], LINKED);
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let read = |name: &str| std::fs::read_to_string(out.join(name)).unwrap();
+    let orders = read("orders/effect.ts");
+    for snippet in [
+        "listAll(request?: ListRequest, options?: RequestOptions): Stream.Stream<string, ListError>;",
+        r#"const ListPagination: Pagination = { kind: "uri", next: ["links", "next"], results: ["data"] };"#,
+    ] {
+        assert!(orders.contains(snippet), "orders has no {snippet:?}:\n{orders}");
+    }
+    let logs = read("logs/effect.ts");
+    for snippet in [
+        "listAll(request: ListRequest, options?: RequestOptions): Stream.Stream<number, ListError>;",
+        r#"const ListPagination: Pagination = { kind: "path", next: ["nextPage"], results: ["data"] };"#,
+    ] {
+        assert!(logs.contains(snippet), "logs has no {snippet:?}:\n{logs}");
+    }
+    std::fs::remove_dir_all(&out).unwrap();
 }
 
 #[test]

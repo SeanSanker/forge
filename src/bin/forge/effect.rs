@@ -91,8 +91,9 @@ struct Entry<'f> {
 /// How a method pages, from its `x-fern-pagination`, with the TypeScript
 /// names of the fields it reads.
 struct Pagination<'f> {
-    /// The request field that picks the page.
-    param: String,
+    /// The request field that picks the page, if any: a page that a link
+    /// picks has none.
+    param: Option<String>,
     /// The path of the items in the response.
     results: Vec<String>,
     /// The type of an item.
@@ -109,6 +110,9 @@ enum Kind {
         step: Option<String>,
         has_next_page: Option<Vec<String>>,
     },
+    /// The response has a link to the next page at the path: a URL, or a
+    /// path that follows the base URL.
+    Link { next: Vec<String>, path: bool },
 }
 
 /// Returns the effect.ts of `node`: its Client and bind, then how each
@@ -238,17 +242,19 @@ fn client_interface(
                 let text =
                     format!("Every item of every page of `{name}`, fetched a page at a time as the stream is read.");
                 f.doc(&doc(&text, m.is_deprecated()));
-                let optional = optional_without(&entry.request, &pagination.param);
+                let param = pagination.param.as_deref();
+                let optional = optional_without(&entry.request, param.unwrap_or_default());
+                let request = match param {
+                    Some(param) => frag!("Omit<", request_ident(m), ", ", js_string(param), ">"),
+                    None => frag!(request_ident(m)),
+                };
                 p!(
                     f,
                     key(&all_name(m)),
                     "(request",
                     if optional { "?: " } else { ": " },
-                    "Omit<",
-                    request_ident(m),
-                    ", ",
-                    js_string(&pagination.param),
-                    ">, options?: ",
+                    request,
+                    ", options?: ",
                     request_options(),
                     "): ",
                     EFFECT.ident("Stream").ty(),
@@ -378,17 +384,18 @@ fn bind(f: &mut TsFile, entries: &[Entry<'_>], groups: &[Group<'_>], group_names
 /// Declares how `m` pages, for its `All` twin.
 fn declare_pagination(f: &mut TsFile, m: Method<'_>, pagination: &Pagination<'_>) {
     let path = |names: &[String]| frag!("[", join(", ", names.iter().map(|n| js_string(n))), "]");
+    let param = js_string(pagination.param.as_deref().unwrap_or_default());
     let mut members: Vec<Fragment> = Vec::new();
     match &pagination.kind {
         Kind::Cursor { next } => {
             members.push(frag!(r#"kind: "cursor""#));
-            members.push(frag!("cursor: ", js_string(&pagination.param)));
+            members.push(frag!("cursor: ", param));
             members.push(frag!("nextCursor: ", path(next)));
             members.push(frag!("results: ", path(&pagination.results)));
         }
         Kind::Offset { step, has_next_page } => {
             members.push(frag!(r#"kind: "offset""#));
-            members.push(frag!("offset: ", js_string(&pagination.param)));
+            members.push(frag!("offset: ", param));
             members.push(frag!("results: ", path(&pagination.results)));
             if let Some(step) = step {
                 members.push(frag!("step: ", js_string(step)));
@@ -396,6 +403,11 @@ fn declare_pagination(f: &mut TsFile, m: Method<'_>, pagination: &Pagination<'_>
             if let Some(has_next_page) = has_next_page {
                 members.push(frag!("hasNextPage: ", path(has_next_page)));
             }
+        }
+        Kind::Link { next, path: relative } => {
+            members.push(frag!("kind: ", if *relative { r#""path""# } else { r#""uri""# }));
+            members.push(frag!("next: ", path(next)));
+            members.push(frag!("results: ", path(&pagination.results)));
         }
     }
     p!(
@@ -713,16 +725,19 @@ fn service_key(forge: &Forge, name: Option<&str>) -> String {
 }
 
 /// Returns how `m` pages, from its `x-fern-pagination`, or `None` when it
-/// has none. Only cursor and offset pagination are covered. The request
-/// field that picks the page must be a parameter, and the paths must name
-/// fields of the one JSON body of the success responses.
+/// has none. Cursor, offset, next_uri and next_path pagination are
+/// covered. The request field that picks the page must be a parameter, and
+/// the paths must name fields of the one JSON body of the success
+/// responses.
 fn pagination<'f>(m: Method<'f>, request: &Request<'f>) -> Result<Option<Pagination<'f>>, Err> {
     let Some(ext) = m.extension("x-fern-pagination") else {
         return Ok(None);
     };
     let at = format!("{}: x-fern-pagination", method_path(m));
     if ext.as_object().is_none() {
-        return Err(format!("{at}: only an object of cursor or offset pagination is covered").into());
+        return Err(
+            format!("{at}: only an object of cursor, offset, next_uri or next_path pagination is covered").into(),
+        );
     }
     let get = |name: &str| -> Result<Option<&str>, Err> {
         match ext.get(name) {
@@ -785,15 +800,24 @@ fn pagination<'f>(m: Method<'f>, request: &Request<'f>) -> Result<Option<Paginat
     })?;
     let (param, kind) = if let Some(cursor) = get("cursor")? {
         let (next, _) = response_path("next_cursor", require("next_cursor")?)?;
-        (request_field("cursor", cursor)?, Kind::Cursor { next })
+        (Some(request_field("cursor", cursor)?), Kind::Cursor { next })
     } else if let Some(offset) = get("offset")? {
         let step = get("step")?.map(|step| request_field("step", step)).transpose()?;
         let has_next_page = get("has-next-page")?
             .map(|path| response_path("has-next-page", path).map(|(names, _)| names))
             .transpose()?;
-        (request_field("offset", offset)?, Kind::Offset { step, has_next_page })
+        (
+            Some(request_field("offset", offset)?),
+            Kind::Offset { step, has_next_page },
+        )
+    } else if let Some(uri) = get("next_uri")? {
+        let (next, _) = response_path("next_uri", uri)?;
+        (None, Kind::Link { next, path: false })
+    } else if let Some(path) = get("next_path")? {
+        let (next, _) = response_path("next_path", path)?;
+        (None, Kind::Link { next, path: true })
     } else {
-        return Err(format!("{at}: only cursor and offset pagination are covered").into());
+        return Err(format!("{at}: only cursor, offset, next_uri and next_path pagination are covered").into());
     };
     Ok(Some(Pagination {
         param,

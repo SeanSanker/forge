@@ -13,6 +13,10 @@
  *   page size, it's the index of the page's first item, from 0. The last
  *   page has `hasNextPage` false when the response has it, and is otherwise
  *   empty, or shorter than the page size.
+ * - `uri` and `path`: the response has a link to the next page at `next`: a
+ *   URL, which may be relative to the base URL, or a path that follows the
+ *   base URL. The last page has none. Links are followed only on the base
+ *   URL's origin.
  *
  * Fields and paths are the TypeScript names of the fields, as the codecs
  * rename them.
@@ -39,7 +43,15 @@ export type Pagination =
       readonly results: readonly string[];
       readonly step?: string;
       readonly hasNextPage?: readonly string[];
-    };
+    }
+  | Link<'uri'>
+  | Link<'path'>;
+
+interface Link<K extends 'uri' | 'path'> {
+  readonly kind: K;
+  readonly next: readonly string[];
+  readonly results: readonly string[];
+}
 
 type Fields = { readonly [key: string]: unknown };
 
@@ -78,6 +90,27 @@ export function paginate<I, E extends ClientError = ClientError>(
       options,
       sending,
     );
+
+  if (pagination.kind === 'uri' || pagination.kind === 'path') {
+    const { kind } = pagination;
+    return Stream.paginate(undefined as string | undefined, (at) =>
+      Effect.map(
+        transport.send<unknown, E>(
+          operation,
+          fields,
+          options,
+          at === undefined ? sending : { ...sending, link: kind === 'uri' ? { uri: at } : { path: at } },
+        ),
+        (response) => {
+          const next = get(response, pagination.next);
+          const page = items(response, pagination) as readonly I[];
+          // A link that doesn't move would fetch the same page forever.
+          const more = typeof next === 'string' && next !== '' && next !== at;
+          return [page, more ? Option.some(next) : Option.none()] as const;
+        },
+      ),
+    );
+  }
 
   if (pagination.kind === 'cursor') {
     return Stream.paginate(fields[pagination.cursor], (cursor: unknown) =>

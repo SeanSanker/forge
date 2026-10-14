@@ -200,6 +200,15 @@ export interface SendOptions {
    * operation that needs none. True by default.
    */
   readonly auth?: boolean;
+  /**
+   * Where to send the request instead of the operation's route and query:
+   * a next page link from a response, as a URL, which may be relative to
+   * the base URL, or as a path that follows the base URL. The client's and
+   * the call's query parameters are added where the link has none of the
+   * same name. A link to another origin than the base URL's is a defect, so
+   * a response can't send the client's credentials elsewhere.
+   */
+  readonly link?: { readonly uri: string } | { readonly path: string };
 }
 
 type Fields = { [key: string]: unknown };
@@ -237,7 +246,7 @@ export class EffectTransport {
     options: RequestOptions | undefined,
     sending?: SendOptions,
   ): Effect.Effect<T, E> {
-    const send = () => this.#send(operation, (request ?? {}) as Fields, options, sending?.auth ?? true);
+    const send = () => this.#send(operation, (request ?? {}) as Fields, options, sending ?? {});
     return Effect.suspend(send) as Effect.Effect<T, E>;
   }
 
@@ -245,7 +254,7 @@ export class EffectTransport {
     operation: Operation,
     request: Fields,
     options: RequestOptions | undefined,
-    authenticate: boolean,
+    sending: SendOptions,
   ): Effect.Effect<unknown, ClientError> {
     const headers = new Headers({ accept: 'application/json' });
     new Headers(this.#options.headers).forEach((value, key) => {
@@ -257,7 +266,11 @@ export class EffectTransport {
 
     // The whole URL, query and all, is the request's url, as an Auth that
     // signs requests reads it, rather than split into its urlParams.
-    const target = url(this.#baseUrl, operation, request, this.#options, options).href;
+    const target = (
+      sending.link === undefined
+        ? url(this.#baseUrl, operation, request, this.#options, options)
+        : link(this.#baseUrl, sending.link, this.#options, options)
+    ).href;
     let req = HttpClientRequest.make(operation.method as HttpMethod.HttpMethod)(target, { headers });
     const body = bodyOf(operation, request);
     if (body !== undefined) {
@@ -266,7 +279,7 @@ export class EffectTransport {
       req = HttpClientRequest.bodyText(req, JSON.stringify(body), contentType);
     }
 
-    return Effect.flatMap(this.#execute(req, operation, authenticate), (response) =>
+    return Effect.flatMap(this.#execute(req, operation, sending.auth ?? true), (response) =>
       response.status < 200 || response.status > 299
         ? Effect.flatMap(apiError(operation, response), Effect.fail)
         : decode(operation, response),
@@ -569,6 +582,34 @@ function url(
   options?.query?.forEach((value, key) => {
     query.append(key, value);
   });
+  return target;
+}
+
+// Returns the URL of a next page link, with the query parameters of the
+// client and the call that it lacks, and checks it is on the base URL's
+// origin.
+function link(
+  baseUrl: string,
+  next: { readonly uri: string } | { readonly path: string },
+  client: ClientOptions,
+  options: RequestOptions | undefined,
+): URL {
+  const base = new URL(baseUrl);
+  const target =
+    'uri' in next
+      ? new URL(next.uri, `${baseUrl}/`)
+      : new URL(baseUrl + (next.path.startsWith('/') ? '' : '/') + next.path);
+  if (target.origin !== base.origin) {
+    throw new TypeError(`the next page is at ${target.origin}, not ${base.origin}, so it isn't fetched`);
+  }
+  const query = target.searchParams;
+  for (const params of [client.query, options?.query]) {
+    params?.forEach((value, key) => {
+      if (!query.has(key)) {
+        query.append(key, value);
+      }
+    });
+  }
   return target;
 }
 

@@ -195,7 +195,7 @@ const FakeApi = Api.layerTest({
 A method with Fern's
 [`x-fern-pagination`](https://buildwithfern.com/learn/api-definitions/openapi/extensions/pagination)
 gets a twin named with `All`, which returns a `Stream` of every item of every
-page and takes the request without the field that picks the page. Pages are
+page and takes the request without the field that picks the page, if any. Pages are
 fetched as the stream is read.
 
 - **cursor**: `cursor` names the request parameter, `next_cursor` where the
@@ -205,11 +205,17 @@ fetched as the stream is read.
   number from 1; with `step`, the parameter of the page size, it's the index
   of the first item, from 0. The stream stops when `has-next-page` is false,
   or else on an empty page or one shorter than the page size.
+- **next_uri** and **next_path**: where the response has a link to the next
+  page: a URL, which may be relative to the base URL, or a path that follows
+  the base URL. The stream stops when there is none, or when it doesn't
+  change. A link is followed only on the base URL's origin, so a response
+  can't send the client's credentials to another host: one elsewhere is a
+  defect.
 
 `results` names the array of items, whose type is the item type of the
 Stream. Paths are checked against the method's parameters and its response
 type when the SDK is generated, and an extension forge can't follow is an
-error. `next_uri`, `next_path` and other kinds of pagination aren't covered.
+error.
 
 ## The runtime
 
