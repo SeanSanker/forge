@@ -126,17 +126,21 @@ const stack =
 ```
 
 Against the live API, with one more create that Cloudflare rejects
-(`pnpm preview --fail`):
+(`pnpm preview --fail --name pr-42`):
 
 ```
- 0.00s  creating a KV namespace, a D1 database and a queue named forge-effect-preview-…, at once
- 0.33s  ✗ couldn't create a queue named "Not Valid!"
- 0.37s  ✓ created KV namespace
- 0.59s  ✓ created D1 database
- 1.28s  ✓ created queue
- 1.54s  ✓ deleted queue
- 2.02s  ✓ deleted D1 database
- 2.17s  ✓ deleted KV namespace
+ 0.00s  creating pr-42: KV namespace, D1 database, queue
+ 0.00s  + queue "Not Valid!", which fails on purpose
+ 0.41s  ✗ couldn't create queue "Not Valid!"
+ 0.46s  ✓ created KV namespace pr-42
+ 0.77s  ✓ created D1 database pr-42
+ 1.35s  ✓ created queue pr-42
+ 1.67s  ✓ deleted queue pr-42
+ 2.26s  ✓ deleted D1 database pr-42
+ 2.44s  ✓ deleted KV namespace pr-42
+
+failed: Queue name 'Not Valid!' is invalid
+nothing left behind
 ```
 
 ### All or none, across a fleet
@@ -158,21 +162,22 @@ Effect.acquireRelease(
 );
 ```
 
-It streams the fleet from `api.d1.listAll`, a page at a time, and migrates
-four databases at once. Against the live API, with one tenant that already
-has the new column (`pnpm migrate --fail`):
+It streams the fleet from `api.d1.listAll`, a page at a time, migrates four
+databases at once, and restores them all at once, in a parallel scope. Against the live API, with one tenant that already
+has the new column (`pnpm migrate --fail --name tenant`):
 
 ```
- 0.99s  ✓ made 8 tenant databases
- 1.00s  migrating, 4 at a time: ALTER TABLE users ADD COLUMN email TEXT
- 1.43s  ✗ tenant-…-06 failed: duplicate column name: email: SQLITE_ERROR
- 1.46s  ✓ tenant-…-02 migrated
- 1.48s  ✓ tenant-…-05 migrated
- 1.48s  ✓ tenant-…-07 migrated
- 2.58s  ↩ tenant-…-07 restored
- 3.74s  ↩ tenant-…-05 restored
- 4.97s  ↩ tenant-…-02 restored
- 5.25s  1 of 8 tenants have users.email: only the one that already had it
+ 0.00s  making 8 tenants; tenant-06 already has the column
+ 1.45s  ✓ made 8 tenants
+ 1.45s  migrating 4 at a time: ALTER TABLE users ADD COLUMN email TEXT
+ 1.91s  ✓ tenant-05 migrated
+ 1.97s  ✓ tenant-07 migrated
+ 1.97s  ✓ tenant-03 migrated
+ 2.04s  ✗ tenant-06: duplicate column name: email
+ 3.17s  ↩ tenant-03 restored
+ 3.19s  ↩ tenant-05 restored
+ 3.30s  ↩ tenant-07 restored
+ 3.67s  1 of 8 have the column: tenant-06, which already had it
 ```
 
 A restore also undoes any other write made since the bookmark, so this is
