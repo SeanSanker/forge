@@ -372,6 +372,9 @@ one that lasts an hour, with no sign-up.
   names, such as `account.id`, with Fern's `x-fern-parameter-name`, so the
   SDK has them as `accountId`; forge leaves out such a parameter that
   nothing names.
+- `scripts/patches.ts` fills in what the document leaves out: `assets` in a
+  Worker version upload's metadata, which the API takes, as the script
+  upload's metadata declares.
 - `scripts/envelope.ts` replaces forge's envelope hook. Cloudflare wraps each
   payload in `{ success, errors, messages, result }`, and the document
   describes a single result without that wrapper, so the hook unwraps a result
