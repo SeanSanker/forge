@@ -38,9 +38,17 @@ impl Plugin for Generator {
     type File = File;
 
     /// Returns the files of the TypeScript SDK's root, the root's
-    /// effect.ts, and the Effect runtime.
+    /// effect.ts, and the Effect runtime, whose files replace the
+    /// TypeScript runtime's of the same path, such as `_/dates.ts`.
     fn generate(&self, forge: &Forge) -> Result<impl Iterator<Item = File>, Err> {
-        let mut files: Vec<File> = ts::Generator.generate(forge)?.collect();
+        let replaced: Vec<String> = RUNTIME
+            .iter()
+            .map(|&(path, _)| RUNTIME_DIR.sub(path).as_str().to_owned())
+            .collect();
+        let mut files: Vec<File> = ts::Generator
+            .generate(forge)?
+            .filter(|file| !matches!(file, File::Runtime { path, .. } if replaced.contains(path)))
+            .collect();
         files.push(File::Ts(effect(
             Node::Root(forge),
             self.name.as_deref(),
@@ -67,8 +75,9 @@ impl Plugin for Generator {
 }
 
 /// The sources of the Effect runtime, by path in lib/src.
-const RUNTIME: [(&str, &str); 3] = [
+const RUNTIME: [(&str, &str); 4] = [
     ("auth.ts", include_str!("effect/lib/src/auth.ts")),
+    ("dates.ts", include_str!("effect/lib/src/dates.ts")),
     ("effect.ts", include_str!("effect/lib/src/effect.ts")),
     ("paginate.ts", include_str!("effect/lib/src/paginate.ts")),
 ];

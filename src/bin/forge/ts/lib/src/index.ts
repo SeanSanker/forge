@@ -3,16 +3,15 @@ export {
   bytes,
   type Codec,
   type CodecRef,
-  date,
   discriminated,
   type Entry,
-  instant,
   int64,
   intersection,
   map,
   object,
   union,
 } from './codec.js';
+export { type CalendarDate, date, instant, type Timestamp } from './dates.js';
 export { ApiError } from './error.js';
 export {
   type BaseClientOptions,

@@ -5,9 +5,7 @@ import {
   array,
   bytes,
   type Codec,
-  date,
   discriminated,
-  instant,
   int64,
   intersection,
   isRecord,
@@ -18,6 +16,7 @@ import {
   toBase64,
   union,
 } from '../src/codec.js';
+import { date, instant } from '../src/dates.js';
 
 // A codec that tags what it converts, to see which codec ran on a value.
 function tag(name: string): Codec {

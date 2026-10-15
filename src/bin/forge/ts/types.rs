@@ -21,7 +21,7 @@ pub(crate) enum Prec {
 /// ```
 pub(crate) fn typ(t: Type<'_>, prec: Prec) -> Fragment {
     match t {
-        Type::Scalar(scalar) => frag!(scalar_type(scalar)),
+        Type::Scalar(scalar) => scalar_type(scalar),
         Type::Model(m) => frag!(Ident::model(m).ty()),
         Type::Array(array) => frag!(typ(array.elem(), Prec::Array), "[]"),
         Type::Object(object) => object_type(object),
@@ -52,22 +52,24 @@ pub(crate) fn typ(t: Type<'_>, prec: Prec) -> Fragment {
     }
 }
 
-fn scalar_type(scalar: Scalar) -> &'static str {
-    match scalar {
+fn scalar_type(scalar: Scalar) -> Fragment {
+    let ty = match scalar {
         Scalar::Unknown => "unknown",
         Scalar::Null => "null",
         Scalar::Boolean => "boolean",
         Scalar::String => "string",
         Scalar::Number(Number::Int64) => "bigint",
         Scalar::Number(_) => "number",
-        Scalar::DateTime => "Temporal.Instant",
-        Scalar::Date => "Temporal.PlainDate",
+        // The runtime's dates.ts says what a date is.
+        Scalar::DateTime => return frag!(super::runtime("Timestamp").ty()),
+        Scalar::Date => return frag!(super::runtime("CalendarDate").ty()),
         Scalar::Bytes => "Uint8Array",
         // Only JSON content reaches the SDK, and in JSON a string with
         // format `binary` is still a string on the wire, so it is kept
         // as one, with no codec.
         Scalar::Binary => "string",
-    }
+    };
+    frag!(ty)
 }
 
 /// Returns an object type: its fields, and an index signature when it

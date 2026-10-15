@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { Effect, Layer, Stream } from 'effect';
+import { DateTime, Effect, Layer, Stream } from 'effect';
 import { HttpClient, HttpClientResponse } from 'effect/http';
 
 import { Api, Auth } from '../sdk/effect.js';
@@ -58,4 +58,19 @@ test('a single result is unwrapped from its envelope', async () => {
     }).pipe(Effect.provide(layer)),
   );
   assert.deepEqual(namespace, { id: 'ns1', title: 'tour' });
+});
+
+test('a date-time decodes to a DateTime.Utc, with no Temporal', async () => {
+  assert.equal(typeof (globalThis as { Temporal?: unknown }).Temporal, 'undefined');
+  const { layer } = cloudflare(() => ({
+    result: { uuid: 'db1', name: 'tour', created_at: '2026-10-15T12:00:00.123Z' },
+  }));
+  const database = await Effect.runPromise(
+    Effect.gen(function* () {
+      const api = yield* Api;
+      return yield* api.d1.get({ accountId: 'acc', databaseId: 'db1' });
+    }).pipe(Effect.provide(layer)),
+  );
+  assert.ok(DateTime.isDateTime(database.createdAt));
+  assert.equal(DateTime.formatIso(database.createdAt), '2026-10-15T12:00:00.123Z');
 });

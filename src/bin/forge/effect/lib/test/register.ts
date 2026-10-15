@@ -6,7 +6,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 // them. Node runs the `.ts` files as they are, so a relative `.js` import
 // that does not exist resolves to the `.ts` file next to it. In an SDK,
 // these sources sit in `_/` next to the TypeScript runtime, so an import
-// from src that is in neither resolves to the TypeScript runtime's file.
+// from src that is in neither resolves to the TypeScript runtime's file,
+// and a file of src, such as dates.ts, replaces the TypeScript runtime's.
 const src = fileURLToPath(new URL('../src/', import.meta.url));
 const tsSrc = fileURLToPath(new URL('../../../ts/lib/src/', import.meta.url));
 
@@ -23,6 +24,9 @@ registerHooks({
       const path = fileURLToPath(new URL(ts, context.parentURL));
       if (!existsSync(path) && path.startsWith(src)) {
         return nextResolve(pathToFileURL(tsSrc + path.slice(src.length)).href, context);
+      }
+      if (path.startsWith(tsSrc) && existsSync(src + path.slice(tsSrc.length))) {
+        return nextResolve(pathToFileURL(src + path.slice(tsSrc.length)).href, context);
       }
       return nextResolve(ts, context);
     }

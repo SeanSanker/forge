@@ -284,11 +284,10 @@ one that lasts an hour, with no sign-up.
 - Most listings page by page number. Deleting items while streaming such a
   listing moves the later items onto earlier pages, so the stream skips some:
   collect the items first (`Stream.runCollect`), then delete them.
-- The SDK decodes date-times to `Temporal`, which Node 24 has only behind
-  `--harmony-temporal` and Workers doesn't have, so import a polyfill such as
-  `temporal-polyfill/global` first, as `src/main.ts` does. In a Worker, also
-  keep in mind that `structuredClone` copies a polyfilled date as `{}`, so
-  store dates in Durable Object storage as strings.
+- Date-times are Effect `DateTime.Utc`s, to the millisecond, so no
+  `Temporal` polyfill is needed. `JSON.stringify` writes one as its ISO
+  string, but `structuredClone` copies it as a plain object, so in a Worker,
+  store dates in Durable Object storage as strings (`DateTime.formatIso`).
 - Request types include fields the document marks read-only, as forge's
   TypeScript target does
   ([cloudflare/forge#43](https://github.com/cloudflare/forge/issues/43)).

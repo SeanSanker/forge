@@ -11,9 +11,10 @@ forge openapi.json --target effect --out sdk
 ## What it writes
 
 Everything the `ts` target writes, unchanged except that each operation in
-`client.ts` is exported, plus:
+`client.ts` is exported and dates are Effect's, plus:
 
 ```
+_/dates.ts       in place of the ts target's: date-times as DateTime.Utc
 _/effect.ts      the Effect transport: sends operations through Effect's HttpClient
 _/auth.ts        Auth: bearer, basic, API keys, cached tokens, OAuth2 client credentials
 _/paginate.ts    the Streams of paginated methods
@@ -26,6 +27,13 @@ Each method returns `Effect<Response, GetError>`, where its error is a
 `ClientError`: `ApiError | AuthError | HttpClientError`. The request and
 response types, codecs and operations are the `ts` target's own, so both
 clients encode and decode alike.
+
+A `date-time` is an Effect `DateTime.Utc`, to the millisecond, so an SDK
+needs no `Temporal`, which Node has only behind a flag and Workers doesn't
+have. A string without an offset, or that isn't a real date and time, stays
+a string. A `date`, such as `2024-02-29`, stays a string too, as a calendar
+date has no time zone to make it a `DateTime` in. Both clients share the
+types and codecs, so the Promise client has the same dates.
 
 ```ts
 import { Effect, Layer } from 'effect';
@@ -266,7 +274,9 @@ error.
 
 `lib/` holds the runtime's sources, which forge embeds. In an SDK they sit in
 `_/` next to the TypeScript runtime, which they import, so `lib/tsconfig.json`
-and `lib/test/register.ts` resolve those imports to `../ts/lib/src`.
+and `lib/test/register.ts` resolve those imports to `../ts/lib/src`. A file
+of both, `dates.ts`, is the Effect runtime's, which `register.ts` resolves
+the TypeScript runtime's imports of to as well.
 
 ```sh
 cd src/bin/forge/effect/lib

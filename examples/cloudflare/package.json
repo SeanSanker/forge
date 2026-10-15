@@ -16,7 +16,6 @@
   "devDependencies": {
     "@types/node": "24.19.0",
     "effect": "4.0.2",
-    "temporal-polyfill": "1.0.5",
     "typescript": "7.0.2"
   },
   "engines": {

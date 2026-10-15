@@ -1,6 +1,3 @@
-// Node 24 has no Temporal yet; the SDK decodes date-times to it.
-import 'temporal-polyfill/global';
-
 import { Cause, Console, Duration, Effect, Exit, Layer } from 'effect';
 import { FetchHttpClient, HttpClient, type HttpClientError, type HttpClientResponse } from 'effect/http';
 

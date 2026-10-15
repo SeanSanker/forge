@@ -288,9 +288,11 @@ export function discriminated(
   };
 }
 
-// attempt returns the result of fn, or fallback when the value is not in the
-// form fn expects. A missing global, such as Temporal, is still thrown.
-function attempt<T>(fn: () => T, fallback: unknown): T | unknown {
+/**
+ * Returns the result of fn, or fallback when the value is not in the form
+ * fn expects. A missing global, such as Temporal, is still thrown.
+ */
+export function attempt<T>(fn: () => T, fallback: unknown): T | unknown {
   try {
     return fn();
   } catch (e) {
@@ -300,26 +302,6 @@ function attempt<T>(fn: () => T, fallback: unknown): T | unknown {
     return fallback;
   }
 }
-
-function toText(value: unknown): unknown {
-  return typeof value === 'object' && value !== null ? String(value) : value;
-}
-
-/**
- * Converts a `date-time` string and a Temporal.Instant.
- */
-export const instant: Codec = {
-  decode: (value) => (typeof value === 'string' ? attempt(() => Temporal.Instant.from(value), value) : value),
-  encode: toText,
-};
-
-/**
- * Converts a `date` string and a Temporal.PlainDate.
- */
-export const date: Codec = {
-  decode: (value) => (typeof value === 'string' ? attempt(() => Temporal.PlainDate.from(value), value) : value),
-  encode: toText,
-};
 
 /**
  * Returns the base64 encoding of bytes.

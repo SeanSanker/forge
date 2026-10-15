@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
 
-import { int64, object, instant } from '../src/codec.js';
+import { int64, object } from '../src/codec.js';
+import { instant } from '../src/dates.js';
 import { ApiError } from '../src/error.js';
 import { type BaseClientOptions, type Operation, type Pagination, Transport } from '../src/transport.js';
 
