@@ -15,6 +15,14 @@
  *
  * Only a `result` that is plainly an array counts, as the generator checks
  * the paths it is given.
+ *
+ * The document describes a single result without Cloudflare's envelope, so
+ * a listing whose result is an object with one array pages by cursor too,
+ * when it has a `cursor` query parameter and either the object has the next
+ * cursor (as `cursor`, `next_cursor` or `nextCursor`), or Cloudflare's docs
+ * say the envelope's `result_info.cursor` has it, as for R2 buckets.
+ * scripts/envelope.ts keeps `result_info` beside such a result, and this
+ * adds it to the response's schema.
  */
 
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -76,8 +84,15 @@ const isArray = (schema: Schema | undefined) =>
 
 const isString = (schema: Schema | undefined) => schema !== undefined && schema['type'] === 'string';
 
+// The fields an object result can hold its next cursor in.
+const cursorFields = ['cursor', 'next_cursor', 'nextCursor'];
+
+// Listings whose next cursor is in the envelope's result_info, beside an
+// object result, as Cloudflare's API docs show.
+const cursorInResultInfo = new Set(['/accounts/{account_id}/r2/buckets']);
+
 const added = { cursor: 0, offset: 0 };
-for (const item of Object.values(doc['paths'] as Schema)) {
+for (const [path, item] of Object.entries(doc['paths'] as Schema)) {
   const operation = resolve((item as Schema)['get']);
   if (operation === undefined || operation['x-fern-pagination'] !== undefined) {
     continue;
@@ -89,6 +104,41 @@ for (const item of Object.values(doc['paths'] as Schema)) {
   const query = (name: string) => parameters.map(resolve).some((p) => p?.['in'] === 'query' && p['name'] === name);
   const body = resolve(at(operation, 'responses', '200', 'content', 'application/json', 'schema'));
   if (!isArray(property(body, 'result'))) {
+    if (body === undefined || !query('cursor')) {
+      continue;
+    }
+    const arrays = Object.keys((body['properties'] as Schema | undefined) ?? {}).filter((k) =>
+      isArray(property(body, k)),
+    );
+    const next = cursorFields.find((k) => isString(property(body, k)));
+    if (arrays.length !== 1) {
+      continue;
+    }
+    if (next !== undefined) {
+      operation['x-fern-pagination'] = {
+        cursor: '$request.cursor',
+        next_cursor: `$response.${next}`,
+        results: `$response.${arrays[0]}`,
+      };
+      added.cursor++;
+    } else if (cursorInResultInfo.has(path)) {
+      const content = at(operation, 'responses', '200', 'content', 'application/json') as Schema;
+      content['schema'] = {
+        allOf: [
+          content['schema'],
+          {
+            type: 'object',
+            properties: { result_info: { type: 'object', properties: { cursor: { type: 'string' } } } },
+          },
+        ],
+      };
+      operation['x-fern-pagination'] = {
+        cursor: '$request.cursor',
+        next_cursor: '$response.result_info.cursor',
+        results: `$response.${arrays[0]}`,
+      };
+      added.cursor++;
+    }
     continue;
   }
   if (query('cursor') && isString(property(property(body, 'result_info'), 'cursor'))) {

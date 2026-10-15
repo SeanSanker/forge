@@ -161,11 +161,16 @@ one that lasts an hour, with no sign-up.
 - `scripts/paginate.ts` marks which list operations page, since the document
   pages them without saying so: a GET with a `result` array and either a
   `cursor` parameter, with the next cursor at `result_info.cursor` (KV keys,
-  for one), or a `page` parameter. That gives 214 `All` Streams.
+  for one), or a `page` parameter; or a GET with a `cursor` parameter whose
+  result is an object with one array and the next cursor beside it, or, for
+  R2 buckets, in the envelope's `result_info`. That gives 222 `All` Streams.
+  Queues and Worker scripts take no page or cursor, so their lists come in
+  one response.
 - `scripts/envelope.ts` replaces forge's envelope hook. Cloudflare wraps each
   payload in `{ success, errors, messages, result }`, and the document
   describes a single result without that wrapper, so the hook unwraps a result
-  that isn't an array. Lists keep theirs, as the document describes them.
+  that isn't an array, keeping the envelope's `result_info` beside an object
+  result. Lists keep their envelope, as the document describes them.
 - `src/report.ts` and `src/tour.ts` are the programs, and `test/` runs them
   against fakes made with `Api.layerTest`.
 
