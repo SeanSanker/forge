@@ -164,13 +164,24 @@ const CloudflareLive = Api.layer({ auth: Security.apiToken(token) }).pipe(Layer.
 `ClientOptions.retry` retries requests that are safe to send again: those
 whose method is idempotent (`GET`, `HEAD`, `OPTIONS`, `PUT`, `DELETE`), or
 that have an `Idempotency-Key` header. They are retried after a transport
-error or timeout, or a 408, 429, 500, 502, 503 or 504 response, after the
-response's `Retry-After` or a wait that doubles each time, and are
-authenticated again each time, so a signing `Auth` signs each one afresh.
+error or timeout, or a 408, 429, 500, 502, 503 or 504 response. Any other
+request, such as a `POST` that creates something, is retried only after a
+429, which says the request wasn't processed. Retries wait for the
+response's `Retry-After`, up to 5 minutes by default, or else for a wait
+that doubles each time, and are authenticated again each time, so a signing
+`Auth` signs each one afresh.
 
 ```ts
 Api.layer({ auth, retry: { times: 3, delay: '200 millis', maxRetryAfter: '30 seconds' } });
 Api.layer({ auth, retry: true }); // 2 retries, from 250 milliseconds
+```
+
+Each attempt waits 60 seconds for a response by default, then fails as a
+transport error, which a retry repeats like any other. `timeout` changes it,
+and `timeout: false` removes it.
+
+```ts
+Api.layer({ auth, retry: true, timeout: '10 seconds' });
 ```
 
 `HttpClient.retryTransient` retries every method, `POST` too. For rate

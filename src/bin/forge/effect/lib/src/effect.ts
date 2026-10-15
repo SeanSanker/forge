@@ -13,8 +13,8 @@ import { Array as Arr, Cause, Data, Duration, Effect } from 'effect';
 import {
   Headers as HttpHeaders,
   HttpClient,
+  HttpClientError,
   HttpClientRequest,
-  type HttpClientError,
   type HttpClientResponse,
   type HttpMethod,
 } from 'effect/http';
@@ -146,18 +146,26 @@ export interface ClientOptions {
    */
   readonly query?: URLSearchParams;
   /**
-   * Whether, and how, requests that are safe to send again are retried
-   * after a transient failure. Not by default.
+   * Whether, and how, requests are retried after a transient failure. Not
+   * by default.
    */
   readonly retry?: boolean | RetryOptions;
+  /**
+   * How long each attempt waits for a response before it fails, as a
+   * transport error, which a retry may then repeat. 60 seconds by default;
+   * false for no limit.
+   */
+  readonly timeout?: Duration.Input | false;
 }
 
 /**
- * How a client retries a request that is safe to send again: one whose
- * method is idempotent (GET, HEAD, OPTIONS, PUT, DELETE, TRACE), or that has
- * an `Idempotency-Key` header. It is retried after a transport error or a
- * timeout, or a 408, 429, 500, 502, 503 or 504 response, and authenticated
- * again each time.
+ * How a client retries requests, authenticating each attempt again.
+ *
+ * A request that is safe to send again, one whose method is idempotent
+ * (GET, HEAD, OPTIONS, PUT, DELETE, TRACE) or that has an `Idempotency-Key`
+ * header, is retried after a transport error, a timeout, or a 408, 429,
+ * 500, 502, 503 or 504 response. Any other request is retried only after a
+ * 429, which says it wasn't processed.
  */
 export interface RetryOptions {
   /**
@@ -171,7 +179,7 @@ export interface RetryOptions {
   readonly delay?: Duration.Input;
   /**
    * The longest `Retry-After` the client waits for. A response that asks for
-   * longer is not retried. 60 seconds by default.
+   * longer is not retried. 5 minutes by default.
    */
   readonly maxRetryAfter?: Duration.Input;
 }
@@ -297,8 +305,24 @@ export class EffectTransport {
     authenticate: boolean,
   ): Effect.Effect<HttpClientResponse.HttpClientResponse, ClientError> {
     const name = `${operation.method} ${operation.route}`;
-    const execute = (req: HttpClientRequest.HttpClientRequest) =>
-      this.#client.execute(req).pipe(Effect.provideService(HttpClient.SpanNameGenerator, () => name));
+    const timeout = this.#options.timeout ?? Duration.seconds(60);
+    const execute = (req: HttpClientRequest.HttpClientRequest) => {
+      const sent = this.#client.execute(req).pipe(Effect.provideService(HttpClient.SpanNameGenerator, () => name));
+      return timeout === false
+        ? sent
+        : Effect.timeoutOrElse(sent, {
+            duration: timeout,
+            orElse: () =>
+              Effect.fail(
+                new HttpClientError.HttpClientError({
+                  reason: new HttpClientError.TransportError({
+                    request: req,
+                    description: `no response within ${Duration.format(Duration.fromInputUnsafe(timeout))}`,
+                  }),
+                }),
+              ),
+          });
+    };
     const auth = authenticate ? this.#options.auth : undefined;
     let sent: Effect.Effect<HttpClientResponse.HttpClientResponse, ClientError> = execute(request);
     if (auth !== undefined) {
@@ -317,8 +341,8 @@ export class EffectTransport {
       );
     }
     const retry = this.#options.retry;
-    if (retry !== undefined && retry !== false && safeToRepeat(request)) {
-      sent = retrying(sent, retry === true ? {} : retry);
+    if (retry !== undefined && retry !== false) {
+      sent = retrying(sent, retry === true ? {} : retry, safeToRepeat(request));
     }
     const redacted = auth?.redactedHeaders;
     return redacted === undefined || redacted.length === 0
@@ -401,25 +425,28 @@ function safeToRepeat(request: HttpClientRequest.HttpClientRequest): boolean {
 
 // Sends again what `send` sends while it fails in a way that may pass on
 // another try, at most `times` more times, after its Retry-After or a wait
-// that doubles each time. The last response is returned as it is.
+// that doubles each time. The last response is returned as it is. A request
+// that isn't `safe` to send again is repeated only after a 429.
 function retrying(
   send: Effect.Effect<HttpClientResponse.HttpClientResponse, ClientError>,
   options: RetryOptions,
+  safe: boolean,
 ): Effect.Effect<HttpClientResponse.HttpClientResponse, ClientError> {
   const times = options.times ?? 2;
   const delay = Duration.toMillis(options.delay ?? 250);
-  const maxRetryAfter = Duration.toMillis(options.maxRetryAfter ?? Duration.seconds(60));
+  const maxRetryAfter = Duration.toMillis(options.maxRetryAfter ?? Duration.minutes(5));
   const wait = (attempt: number, after: number | undefined) =>
     Effect.sleep(Duration.millis(after ?? delay * 2 ** attempt));
   const loop = (attempt: number): Effect.Effect<HttpClientResponse.HttpClientResponse, ClientError> =>
     Effect.matchEffect(send, {
       onFailure: (error) =>
-        attempt < times && transient(error)
+        safe && attempt < times && transient(error)
           ? Effect.andThen(wait(attempt, undefined), loop(attempt + 1))
           : Effect.fail(error),
       onSuccess: (response) => {
         const after = retryAfter(response);
-        if (attempt >= times || !transientStatuses.has(response.status) || (after ?? 0) > maxRetryAfter) {
+        const retried = safe ? transientStatuses.has(response.status) : response.status === 429;
+        if (attempt >= times || !retried || (after ?? 0) > maxRetryAfter) {
           return Effect.succeed(response);
         }
         return Effect.andThen(wait(attempt, after), loop(attempt + 1));

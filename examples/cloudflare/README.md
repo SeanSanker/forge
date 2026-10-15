@@ -104,9 +104,11 @@ program.pipe(Effect.provide(Fake));
 
 ### Other details
 
-- **Retries** (`retry: true`) only repeat requests that are safe to repeat:
-  GET, PUT, DELETE, or a POST with an `Idempotency-Key`. They wait for
-  `Retry-After`, and authenticate each attempt again.
+- **Retries** (`retry: true`) repeat requests that are safe to repeat (GET,
+  PUT, DELETE, or a POST with an `Idempotency-Key`), and any request that
+  got a 429. They wait for `Retry-After`, up to Cloudflare's 5-minute rate
+  limit window, and authenticate each attempt again.
+- **Each attempt times out** after 60 seconds by default (`timeout`).
 - **The token** is read as a `Redacted` secret, and the `Authorization` header
   is redacted from logs and traces.
 - **Each request is a span** named after its route, such as

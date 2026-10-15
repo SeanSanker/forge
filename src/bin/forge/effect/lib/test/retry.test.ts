@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { Effect } from 'effect';
+import { Effect, Fiber } from 'effect';
+import { TestClock } from 'effect/testing';
 import { HttpClient, HttpClientError, HttpClientResponse } from 'effect/http';
 
 import { make } from '../src/auth.js';
@@ -35,10 +36,15 @@ test('a GET is retried after a transient response, and authenticated again each 
   assert.equal(authenticated, 2);
 });
 
-test('a POST is not retried, unless it has an Idempotency-Key', async () => {
+test('a POST is not retried, unless it has an Idempotency-Key, or gets a 429', async () => {
   const once = send(post, [json(503, {}), json(200, {})], { retry: fast });
   assert.equal((await once.run())._tag, 'Failure');
   assert.equal(once.sent.length, 1);
+
+  // A 429 says the request wasn't processed, so it is safe to send again.
+  const limited = send(post, [json(429, {}), json(200, {})], { retry: fast });
+  assert.equal((await limited.run())._tag, 'Success');
+  assert.equal(limited.sent.length, 2);
 
   const keyed = send(post, [json(503, {}), json(200, {})], { retry: fast }, { 'Idempotency-Key': 'k1' });
   assert.equal((await keyed.run())._tag, 'Success');
@@ -82,5 +88,40 @@ test('a request that gets no response is retried', async () => {
   );
   const transport = new EffectTransport(client, { baseUrl: 'https://api.test', retry: fast });
   assert.deepEqual(await Effect.runPromise(transport.send(get, {}, undefined)), { ok: true });
+  assert.equal(calls, 2);
+});
+
+test('a Retry-After of a few minutes is waited for by default', async () => {
+  const later = new Response('{}', { status: 429, headers: { 'retry-after': '120' } });
+  const { sent, client } = mock(later, json(200, {}));
+  const transport = new EffectTransport(client, { baseUrl: 'https://api.test', retry: fast });
+  const result = await Effect.runPromise(
+    Effect.gen(function* () {
+      const fiber = yield* Effect.forkChild(Effect.result(transport.send(get, {}, undefined)));
+      yield* TestClock.adjust('2 minutes');
+      return yield* Fiber.join(fiber);
+    }).pipe(Effect.provide(TestClock.layer())),
+  );
+  assert.equal(result._tag, 'Success');
+  assert.equal(sent.length, 2);
+});
+
+test('an attempt with no response in time fails as a transport error, which a retry repeats', async () => {
+  let calls = 0;
+  const client = HttpClient.make((request) =>
+    ++calls === 1 ? Effect.never : Effect.succeed(HttpClientResponse.fromWeb(request, json(200, { ok: true }))),
+  );
+  const slow = new EffectTransport(client, { baseUrl: 'https://api.test', timeout: '10 millis' });
+  const result = await Effect.runPromise(Effect.result(slow.send(get, {}, undefined)));
+  assert.ok(
+    result._tag === 'Failure' &&
+      result.failure._tag === 'HttpClientError' &&
+      result.failure.reason._tag === 'TransportError',
+  );
+  assert.match(String(result.failure.reason.description), /no response within/);
+
+  calls = 0;
+  const retried = new EffectTransport(client, { baseUrl: 'https://api.test', timeout: '10 millis', retry: fast });
+  assert.deepEqual(await Effect.runPromise(retried.send(get, {}, undefined)), { ok: true });
   assert.equal(calls, 2);
 });
