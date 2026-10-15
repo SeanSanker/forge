@@ -139,6 +139,45 @@ Against the live API, with one more create that Cloudflare rejects
  2.17s  ✓ deleted KV namespace
 ```
 
+### All or none, across a fleet
+
+The same idea makes a migration of many D1 databases, such as one per
+tenant, all or none. `src/migrate.ts` takes each database's time-travel
+bookmark before it migrates it, as a scoped resource whose release restores
+the bookmark unless the whole run succeeds:
+
+```ts
+Effect.acquireRelease(
+  Effect.gen(function* () {
+    const { bookmark } = yield* api.d1.timeTravel.getBookmark({ accountId, databaseId });
+    yield* api.d1.query({ accountId, databaseId, sql });
+    return bookmark!;
+  }),
+  (bookmark, exit) =>
+    Exit.isSuccess(exit) ? Effect.void : api.d1.timeTravel.restore({ accountId, databaseId, bookmark }),
+);
+```
+
+It streams the fleet from `api.d1.listAll`, a page at a time, and migrates
+four databases at once. Against the live API, with one tenant that already
+has the new column (`pnpm migrate --fail`):
+
+```
+ 0.99s  ✓ made 8 tenant databases
+ 1.00s  migrating, 4 at a time: ALTER TABLE users ADD COLUMN email TEXT
+ 1.43s  ✗ tenant-…-06 failed: duplicate column name: email: SQLITE_ERROR
+ 1.46s  ✓ tenant-…-02 migrated
+ 1.48s  ✓ tenant-…-05 migrated
+ 1.48s  ✓ tenant-…-07 migrated
+ 2.58s  ↩ tenant-…-07 restored
+ 3.74s  ↩ tenant-…-05 restored
+ 4.97s  ↩ tenant-…-02 restored
+ 5.25s  1 of 8 tenants have users.email: only the one that already had it
+```
+
+A restore also undoes any other write made since the bookmark, so this is
+for when the tenants aren't being written to, such as a maintenance window.
+
 ### Testing
 
 App code depends on `Api`, not on `fetch`, so a test provides a fake one.
@@ -195,6 +234,11 @@ CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... pnpm tour
 # deletes them. With --fail, one more create is rejected while the others
 # are in flight. Needs Workers KV Storage Edit, D1 Edit and Queues Edit.
 CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... pnpm preview [--fail]
+
+# Makes eight tenant D1 databases, migrates them all or none, and deletes
+# them. With --fail, one tenant has drifted, so every migrated tenant is
+# restored. Needs D1 Edit.
+CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... pnpm migrate [--fail]
 ```
 
 For a throwaway account to run these in, Wrangler's `--temporary` flag makes
@@ -218,8 +262,8 @@ one that lasts an hour, with no sign-up.
   describes a single result without that wrapper, so the hook unwraps a result
   that isn't an array, keeping the envelope's `result_info` beside an object
   result. Lists keep their envelope, as the document describes them.
-- `src/report.ts`, `src/tour.ts` and `src/preview.ts` are the programs, and
-  `test/` runs them against fakes made with `Api.layerTest`.
+- `src/report.ts`, `src/tour.ts`, `src/preview.ts` and `src/migrate.ts` are
+  the programs, and `test/` runs them against fakes made with `Api.layerTest`.
 
 ## Limits
 

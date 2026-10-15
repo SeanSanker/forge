@@ -1,15 +1,8 @@
-import { Clock, Console, Effect } from 'effect';
+import { Effect } from 'effect';
 
 import { Api } from '../sdk/effect.js';
+import { timeline } from './timeline.js';
 import { Account } from './tour.js';
-
-/**
- * Logs `text` with the seconds since `start`.
- */
-const logAt = (start: number) => (text: string) =>
-  Effect.flatMap(Clock.currentTimeMillis, (now) =>
-    Console.log(`${((now - start) / 1000).toFixed(2).padStart(5)}s  ${text}`),
-  );
 
 /**
  * Makes a preview stack, a KV namespace, a D1 database and a queue named
@@ -28,7 +21,7 @@ export const previewStack = (name: string, options: { readonly failing?: boolean
   Effect.gen(function* () {
     const api = yield* Api;
     const { id: accountId } = yield* Account;
-    const log = logAt(yield* Clock.currentTimeMillis);
+    const log = yield* timeline;
 
     const resource = <A, E, E2>(
       label: string,
