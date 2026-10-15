@@ -52,8 +52,17 @@ api.kv.namespaces.get({ accountId, namespaceId }).pipe(
 );
 ```
 
-Asking the live API for a namespace that doesn't exist gives code `10013`,
-"namespace not found", as a typed value rather than a thrown `unknown`.
+Cloudflare declares most errors as one 4XX response and tells them apart by
+code, so `src/cloudflare.ts` has a small helper for that. Asking the live API
+for a namespace that doesn't exist gives code `10013`, "namespace not found":
+
+```ts
+api.kv.namespaces.get({ accountId, namespaceId }).pipe(
+  catchCode(10013, () => Effect.succeed(undefined)), // other errors fail as they were
+);
+```
+
+In tests, a fake fails the same way with `ApiError.fake({ _tag: 'Status4XX', status: 404, details })`.
 
 ### Pagination
 

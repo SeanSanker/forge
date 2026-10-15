@@ -201,6 +201,17 @@ const FakeApi = Api.layerTest({
 // api.pets.list() dies with "GET /pets isn't stubbed".
 ```
 
+A stub fails as the real client would with `ApiError.fake`, which makes the
+ApiError of a reason, with a stand-in response:
+
+```ts
+const FakeApi = Api.layerTest({
+  pets: {
+    get: () => Effect.fail(ApiError.fake({ _tag: 'NotFound', status: 404, details: { message: 'no such pet' } })),
+  },
+});
+```
+
 ## Pagination
 
 A method with Fern's

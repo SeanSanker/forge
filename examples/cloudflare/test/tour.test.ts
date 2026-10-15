@@ -2,12 +2,10 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { Effect, Exit, Layer, Stream } from 'effect';
-import { HttpClientRequest, HttpClientResponse } from 'effect/http';
 
 import type { CreateResponse as D1Database, QueryResponse } from '../sdk/d1/index.js';
 import { Api, ApiError } from '../sdk/effect.js';
 import type { WorkersKvKey } from '../sdk/kv/keys/index.js';
-import type { WorkersKvApiResponseCommonFailure } from '../sdk/kv/index.js';
 import type { WorkersKvNamespace } from '../sdk/kv/namespaces/index.js';
 import { Account, tour } from '../src/tour.js';
 
@@ -26,16 +24,19 @@ function fake(options: { readonly failWrites?: boolean } = {}) {
           }),
         delete: ({ namespaceId }) => Effect.sync(() => (namespaces.delete(namespaceId), null)),
         // No other namespace exists: a 404, as Cloudflare answers it.
-        get: () => {
-          const errors = [{ code: 10013, message: "get namespace: 'namespace not found'" }];
-          const response = HttpClientResponse.fromWeb(
-            HttpClientRequest.get('https://api.cloudflare.com/'),
-            new Response(JSON.stringify({ success: false, errors }), { status: 404 }),
-          );
-          const details: WorkersKvApiResponseCommonFailure = { errors, messages: [], result: null, success: false };
-          const reason = { _tag: 'Status4XX', status: 404, details } as const;
-          return Effect.fail(new ApiError({ message: errors[0]!.message, status: 404, response, reason }));
-        },
+        get: () =>
+          Effect.fail(
+            ApiError.fake({
+              _tag: 'Status4XX',
+              status: 404,
+              details: {
+                errors: [{ code: 10013, message: "get namespace: 'namespace not found'" }],
+                messages: [],
+                result: null,
+                success: false,
+              },
+            }),
+          ),
       },
       bulk: {
         put: ({ namespaceId, body }) =>

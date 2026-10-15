@@ -15,7 +15,7 @@ import {
   HttpClient,
   HttpClientError,
   HttpClientRequest,
-  type HttpClientResponse,
+  HttpClientResponse,
   type HttpMethod,
 } from 'effect/http';
 
@@ -59,6 +59,25 @@ export class ApiError<const R extends Reason = Reason> extends Data.TaggedError(
     readonly cause?: unknown;
   }) {
     super({ ...props, details: props.reason.details });
+  }
+
+  /**
+   * Returns the ApiError of `reason`, for a test's fake client to fail
+   * with. Its response is a stand-in, with the reason's details as its JSON
+   * body; its message is the body's message, or else the status.
+   *
+   * ```ts
+   * ApiError.fake({ _tag: 'NotFound', status: 404, details: { message: 'no such pet' } });
+   * ```
+   */
+  static fake<const R extends Reason>(reason: R): ApiError<R> {
+    const body = reason.details === undefined ? '' : JSON.stringify(reason.details);
+    const response = HttpClientResponse.fromWeb(
+      HttpClientRequest.get('https://fake.invalid/'),
+      new Response(body, { status: reason.status, headers: { 'content-type': 'application/json' } }),
+    );
+    const message = errorMessage(reason.details) ?? String(reason.status);
+    return new ApiError({ message, status: reason.status, response, reason });
   }
 }
 

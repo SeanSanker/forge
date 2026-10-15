@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import { Cause, Effect, Exit, Stream } from 'effect';
 
-import { type ClientError, EffectTransport, stub } from '../src/effect.js';
+import { ApiError, type ClientError, EffectTransport, stub } from '../src/effect.js';
 import type { Operation } from '../src/index.js';
 import { type Pagination, paginate } from '../src/paginate.js';
 
@@ -48,4 +48,18 @@ test('a method or Stream that is not stubbed dies, naming its operation', async 
   const things = stub(bind, { get: ({ id }) => Effect.succeed({ id }) });
   assert.match(await died(things.parts.count()), /GET \/parts\/count isn't stubbed/);
   assert.match(await died(Stream.runCollect(things.listAll())), /GET \/things isn't stubbed/);
+});
+
+test('ApiError.fake makes an error a stub can fail with, which catchReason handles', async () => {
+  const error = ApiError.fake({ _tag: 'NotFound', status: 404, details: { message: 'no such pet' } });
+  assert.equal(error.message, 'no such pet');
+  assert.equal(error.status, 404);
+  assert.equal(error.response.status, 404);
+  assert.deepEqual(error.details, { message: 'no such pet' });
+  const handled = await Effect.runPromise(
+    Effect.fail(error).pipe(
+      Effect.catchReason('ApiError', 'NotFound', (reason) => Effect.succeed(reason.details.message)),
+    ),
+  );
+  assert.equal(handled, 'no such pet');
 });

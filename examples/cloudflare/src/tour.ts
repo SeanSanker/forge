@@ -1,6 +1,7 @@
 import { Console, Context, Effect, Stream } from 'effect';
 
 import { Api } from '../sdk/effect.js';
+import { catchCode } from './cloudflare.js';
 
 /**
  * The account the tour makes its resources in.
@@ -72,13 +73,11 @@ export const tour = Effect.scoped(
       .pipe(Stream.take(3), Stream.runCollect);
     yield* Console.log(`✓ took the first three dogs from one page: ${dogs.map((key) => key.name).join(', ')}`);
 
-    // A namespace that doesn't exist: Cloudflare's 4XX body is typed.
+    // A namespace that doesn't exist: Cloudflare's error code 10013.
     yield* api.kv.namespaces.get({ accountId, namespaceId: '0'.repeat(32) }).pipe(
       Effect.andThen(Console.log('? found a namespace that should not exist')),
-      Effect.catchReason('ApiError', 'Status4XX', (reason) =>
-        Console.log(
-          `✓ typed ${reason.status}: ${reason.details.errors.map((e) => `${e.code} ${e.message}`).join('; ')}`,
-        ),
+      catchCode(10013, (error) =>
+        Console.log(`✓ typed ${error.status}: ${error.details.errors.map((e) => `${e.code} ${e.message}`).join('; ')}`),
       ),
     );
 
