@@ -181,6 +181,111 @@ fn ts_requests_leave_out_read_only_fields() {
     std::fs::remove_dir_all(&out).unwrap();
 }
 
+/// A document whose methods send and return what isn't JSON: a raw upload,
+/// a multipart upload with files and a JSON part, a form, a text response
+/// and a byte response.
+const NOT_JSON: &str = r##"{
+  "openapi": "3.0.3", "info": {"title": "t", "version": "1"},
+  "paths": {
+    "/objects/{key}": {
+      "put": {"x-fern-sdk-group-name": "objects", "x-fern-sdk-method-name": "put",
+        "parameters": [{"name": "key", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "requestBody": {"required": true, "content": {"application/octet-stream": {"schema": {"type": "string", "format": "binary"}}}},
+        "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {
+          "type": "object", "properties": {"etag": {"type": "string"}}}}}}}},
+      "get": {"x-fern-sdk-group-name": "objects", "x-fern-sdk-method-name": "get",
+        "parameters": [{"name": "key", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "ok", "content": {"application/octet-stream": {"schema": {"type": "string", "format": "binary"}}}},
+          "4XX": {"description": "error", "content": {"application/json": {"schema": {"type": "object"}}}}}}},
+    "/scripts/{name}": {
+      "put": {"x-fern-sdk-group-name": "scripts", "x-fern-sdk-method-name": "upload",
+        "parameters": [{"name": "name", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "requestBody": {"required": true, "content": {
+          "application/javascript": {"schema": {"type": "string"}},
+          "multipart/form-data": {"schema": {"type": "object", "required": ["metadata"], "properties": {
+            "files": {"type": "array", "items": {"type": "string", "format": "binary"}},
+            "metadata": {"type": "object", "properties": {"main_module": {"type": "string"}}}}},
+            "encoding": {"metadata": {"contentType": "application/json"}}}}},
+        "responses": {"204": {"description": "done"}}},
+      "get": {"x-fern-sdk-group-name": "scripts", "x-fern-sdk-method-name": "source",
+        "parameters": [{"name": "name", "in": "path", "required": true, "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "ok", "content": {"application/javascript": {"schema": {"type": "string"}}}}}}},
+    "/logos": {"post": {"x-fern-sdk-group-name": "logos", "x-fern-sdk-method-name": "add",
+      "requestBody": {"content": {"application/x-www-form-urlencoded": {"schema": {
+        "type": "object", "properties": {"tag": {"type": "string"}, "url": {"type": "string"}}}}}},
+      "responses": {"200": {"description": "ok", "content": {"text/plain": {"schema": {"type": "string"}}}}}}}
+  }
+}"##;
+
+#[test]
+fn ts_sends_and_reads_what_is_not_json() {
+    let out = std::env::temp_dir().join(format!("forge-cli-ts-not-json-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&out);
+    let result = forge(&["-", "--target", "ts", "--out", out.to_str().unwrap()], NOT_JSON);
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let read = |name: &str| std::fs::read_to_string(out.join(name)).unwrap();
+
+    // A raw upload is the field `body`, sent as it is; bytes come back as
+    // a Uint8Array, asked for by their media type.
+    let objects = read("objects/client.ts");
+    assert!(
+        objects.contains("export interface PutRequest {\n  key: string;\n  body: BinaryInput;\n}"),
+        "{objects}"
+    );
+    assert!(
+        objects.contains(
+            r#"  encoding: "raw",
+  contentType: "application/octet-stream","#
+        ),
+        "{objects}"
+    );
+    assert!(objects.contains("export type GetResponse = Uint8Array;"), "{objects}");
+    assert!(
+        objects.contains(
+            r#"  response: null,
+  responseType: "bytes",
+  accept: "application/octet-stream",
+  errors: { "4XX": true },"#
+        ),
+        "{objects}"
+    );
+
+    // Multipart wins over a raw media type: its fields sit next to the
+    // parameters, binary ones as files, and the codec still renames the
+    // JSON part's fields. Text comes back as a string.
+    let scripts = read("scripts/client.ts");
+    assert!(scripts.contains("  files?: BinaryInput[];"), "{scripts}");
+    assert!(scripts.contains("  metadata: { mainModule?: string };"), "{scripts}");
+    assert!(
+        scripts.contains(
+            r#"  body: "flat",
+  encoding: "multipart",
+  files: ["files"],
+  request: object([["metadata", null, object([["main_module", "mainModule"]])]]),"#
+        ),
+        "{scripts}"
+    );
+    assert!(!scripts.contains("contentType"), "{scripts}");
+    assert!(scripts.contains("export type SourceResponse = string;"), "{scripts}");
+    assert!(scripts.contains(r#"responseType: "text","#), "{scripts}");
+
+    // A form's fields sit next to the parameters too.
+    let logos = read("logos/client.ts");
+    assert!(
+        logos.contains("export interface AddRequest {\n  tag?: string;\n  url?: string;\n}"),
+        "{logos}"
+    );
+    assert!(
+        logos.contains(
+            r#"  encoding: "form",
+  contentType: "application/x-www-form-urlencoded","#
+        ),
+        "{logos}"
+    );
+    assert!(logos.contains("add(request?: AddRequest"), "{logos}");
+    std::fs::remove_dir_all(&out).unwrap();
+}
+
 /// A document whose methods page by offset, with a page size, and by
 /// cursor, with a required parameter, and where the method `zones.settings`
 /// shares its name with a group.

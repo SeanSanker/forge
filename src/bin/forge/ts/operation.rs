@@ -4,7 +4,7 @@
 use forge::ts::{File, frag, join, p};
 use forge::{Location, Method};
 
-use super::client::{Param, Request, operation_ident, response};
+use super::client::{Encoding, Param, Request, ResponseKind, accept, operation_ident, response, response_kind};
 use super::codec::{codec, members_codec};
 use super::runtime;
 use super::types::{js_string, key};
@@ -47,13 +47,44 @@ pub(super) fn operation(f: &mut File, m: Method<'_>, request: &Request<'_>) {
             } else {
                 p!(f, r#"body: "nested","#);
             }
-            if body.media_type != "application/json" {
+            match body.encoding {
+                Encoding::Json => {}
+                Encoding::Multipart => {
+                    p!(f, r#"encoding: "multipart","#);
+                    let files: Vec<String> = body
+                        .parts
+                        .iter()
+                        .flatten()
+                        .filter(|part| part.is_file())
+                        .map(|part| js_string(part.wire_name()))
+                        .collect();
+                    if !files.is_empty() {
+                        p!(f, "files: [", join(", ", files), "],");
+                    }
+                }
+                Encoding::Form => p!(f, r#"encoding: "form","#),
+                Encoding::Raw { .. } => p!(f, r#"encoding: "raw","#),
+            }
+            // A multipart body's content type has the boundary, which the
+            // runtime's FormData sets.
+            if body.media_type != "application/json" && body.encoding != Encoding::Multipart {
                 p!(f, "contentType: ", js_string(body.media_type), ",");
             }
-            let codec = codec(body.ty, true);
-            if !codec.is_empty() {
-                p!(f, "request: ", codec, ",");
+            if !matches!(body.encoding, Encoding::Raw { .. }) {
+                let codec = codec(body.ty, true);
+                if !codec.is_empty() {
+                    p!(f, "request: ", codec, ",");
+                }
             }
+        }
+        let kind = response_kind(m);
+        if kind != ResponseKind::Json {
+            p!(f, "response: null,");
+            let raw = if kind == ResponseKind::Text { "text" } else { "bytes" };
+            p!(f, "responseType: ", js_string(raw), ",");
+            p!(f, "accept: ", js_string(&accept(m).join(", ")), ",");
+            error_codecs(f, m);
+            return;
         }
         let (types, _) = response(m);
         if !types.is_empty() {

@@ -14,9 +14,7 @@ use std::collections::{HashMap, HashSet};
 use forge::ts::{File as TsFile, Fragment, Ident, Module, PREAMBLE, frag, join, p};
 use forge::{Err, Forge, Group, Method, Model, Plugin, Type};
 
-use crate::ts::client::{
-    Request, group_name, method_doc, method_name, operation_name, request_name, response_name, skipped,
-};
+use crate::ts::client::{Request, group_name, method_doc, method_name, operation_name, request_name, response_name};
 use crate::ts::types::{Prec, all_optional, doc, identifier, js_string, kept, key, typ};
 use crate::ts::{self, File, Node, RUNTIME_DIR};
 
@@ -135,7 +133,6 @@ fn effect(node: Node<'_>, name: Option<&str>, security: &Security) -> Result<TsF
     let entries: Vec<Entry<'_>> = node
         .methods()
         .into_iter()
-        .filter(|&m| !skipped(m))
         .map(|m| {
             let request = Request::new(m);
             let pagination = pagination(m, &request)?;

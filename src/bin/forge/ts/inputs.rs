@@ -9,7 +9,7 @@ use forge::ts::{File, p};
 use forge::{Method, Model, Type};
 
 use super::Node;
-use super::client::skipped;
+use super::client::{Encoding, Request};
 use super::models::print_fields;
 use super::types::{Prec, Side, doc, has_fields, input_ident, input_typ, kept, needs_input};
 
@@ -50,10 +50,23 @@ pub(super) fn input_models(node: Node<'_>) -> Vec<Model<'_>> {
     };
     let mut held = HashSet::new();
     for m in methods {
-        if !skipped(m)
-            && let Some(request) = m.request()
-        {
-            hold(request, &mut held);
+        let request = Request::new(m);
+        for param in &request.params {
+            hold(param.field.ty(), &mut held);
+        }
+        let Some(body) = &request.body else {
+            continue;
+        };
+        match (body.encoding, &body.parts) {
+            (Encoding::Json, _) => hold(body.ty, &mut held),
+            (Encoding::Multipart | Encoding::Form, Some(parts)) => {
+                for field in parts.iter().flat_map(|part| &part.fields) {
+                    if !field.is_read_only() {
+                        hold(field.ty(), &mut held);
+                    }
+                }
+            }
+            (Encoding::Multipart | Encoding::Form, None) | (Encoding::Raw { .. }, _) => {}
         }
     }
     node.models().into_iter().filter(|m| held.contains(m)).collect()

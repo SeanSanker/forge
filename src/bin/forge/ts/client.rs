@@ -4,8 +4,8 @@
 
 use std::collections::{HashMap, HashSet};
 
-use forge::ts::{File, Fragment, Ident, Module, frag, p};
-use forge::{Field, Group, Location, Method, Model, Type};
+use forge::ts::{File, Fragment, Ident, Module, frag, join, p};
+use forge::{Field, Group, Location, Method, Model, Scalar, Type};
 
 use super::models::print_fields;
 use super::operation::operation;
@@ -24,13 +24,7 @@ pub(super) fn client(node: Node<'_>) -> File {
     let groups = node.children();
     let group_names: HashMap<String, Group<'_>> = groups.iter().map(|&sub| (group_name(sub), sub)).collect();
 
-    // A method that is not JSON is left out (specs/13-non-json-operations.md).
-    let methods: Vec<(Method<'_>, Request<'_>)> = node
-        .methods()
-        .into_iter()
-        .filter(|&m| !skipped(m))
-        .map(|m| (m, Request::new(m)))
-        .collect();
+    let methods: Vec<(Method<'_>, Request<'_>)> = node.methods().into_iter().map(|m| (m, Request::new(m))).collect();
 
     let mut f = File::new(node.dir().sub("client.ts"));
     client_options(&mut f);
@@ -276,6 +270,27 @@ fn request_type(f: &mut File, m: Method<'_>, request: &Request<'_>) {
     let name = request_ident(f, m);
     let params = &request.params;
     if let Some(body) = &request.body
+        && body.encoding != Encoding::Json
+    {
+        p!(f, "export interface ", name, " {");
+        print_params(f, params);
+        f.indent(|f| match (&body.parts, request.flat) {
+            (Some(parts), true) => print_parts(f, parts),
+            (parts, _) => {
+                f.doc(body.description);
+                let ty = match (body.encoding, parts) {
+                    (Encoding::Raw { text: true }, _) => frag!("string"),
+                    (Encoding::Raw { text: false }, _) => frag!(runtime("BinaryInput").ty()),
+                    (_, Some(parts)) => parts_type(parts),
+                    (_, None) => frag!("{ [key: string]: unknown }"),
+                };
+                p!(f, "body", if body.required { ": " } else { "?: " }, ty, ";");
+            }
+        });
+        p!(f, "}");
+        return;
+    }
+    if let Some(body) = &request.body
         && request.flat
         && !has_fields(body.ty)
     {
@@ -327,6 +342,24 @@ fn request_type(f: &mut File, m: Method<'_>, request: &Request<'_>) {
 /// none.
 fn response_type(f: &mut File, m: Method<'_>) {
     let name = response_ident(f, m);
+    let raw = match response_kind(m) {
+        ResponseKind::Json => None,
+        ResponseKind::Text => Some("string"),
+        ResponseKind::Bytes => Some("Uint8Array"),
+    };
+    if let Some(raw) = raw {
+        // A success response with no content has no body.
+        let optional = m.responses().any(|r| r.contents().len() == 0);
+        p!(
+            f,
+            "export type ",
+            name,
+            " = ",
+            raw,
+            if optional { " | undefined;" } else { ";" }
+        );
+        return;
+    }
     let (types, optional) = response(m);
     match types[..] {
         [] => p!(f, "export type ", name, " = void;"),
@@ -375,12 +408,228 @@ pub(crate) struct Param<'f> {
     pub(super) location: Location,
 }
 
-/// The JSON request body of a method.
+/// The request body of a method, in the media type it is sent as.
 pub(crate) struct Body<'f> {
+    /// The type of the content: of the JSON, or of the multipart or form
+    /// fields. A raw body is typed by its encoding instead.
     pub(crate) ty: Type<'f>,
     pub(super) media_type: &'f str,
     pub(crate) required: bool,
     pub(super) description: &'f str,
+    pub(crate) encoding: Encoding,
+    /// The fields of a multipart or form body, each part once, or `None`
+    /// when its type has no fixed fields, such as a union.
+    pub(crate) parts: Option<Vec<Part<'f>>>,
+}
+
+/// How a request body is sent.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Encoding {
+    Json,
+    /// `multipart/form-data`: each field a part, binary values as files.
+    Multipart,
+    /// `application/x-www-form-urlencoded`.
+    Form,
+    /// The value itself, as the media type says: text, or bytes.
+    Raw {
+        text: bool,
+    },
+}
+
+/// A field of a multipart or form body: the fields with its wire name in
+/// each member of the body's type, which an `allOf` can declare more than
+/// once.
+pub(crate) struct Part<'f> {
+    pub(crate) fields: Vec<Field<'f>>,
+}
+
+impl<'f> Part<'f> {
+    fn first(&self) -> Field<'f> {
+        self.fields[0]
+    }
+
+    /// Reports whether the part must be sent: one of its fields is
+    /// required, and not read-only.
+    pub(crate) fn is_required(&self) -> bool {
+        self.fields.iter().any(|f| f.is_required() && !f.is_read_only())
+    }
+
+    fn is_read_only(&self) -> bool {
+        self.fields.iter().all(|f| f.is_read_only())
+    }
+}
+
+/// What the success responses of a method have.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResponseKind {
+    /// JSON, or no body.
+    Json,
+    /// Text, such as `text/plain` or `application/xml`.
+    Text,
+    /// Bytes, such as `application/octet-stream` or `image/png`.
+    Bytes,
+}
+
+/// Returns what the success responses of `m` have: JSON when any has it,
+/// or no body; otherwise text when every media type is text, and bytes
+/// when one isn't.
+pub(crate) fn response_kind(m: Method<'_>) -> ResponseKind {
+    let mut media_types = Vec::new();
+    for response in m.responses() {
+        if response.json().is_some() {
+            return ResponseKind::Json;
+        }
+        media_types.extend(response.contents().map(|c| c.media_type()));
+    }
+    match media_types[..] {
+        [] => ResponseKind::Json,
+        _ if media_types.iter().all(|t| is_text(t)) => ResponseKind::Text,
+        _ => ResponseKind::Bytes,
+    }
+}
+
+/// Returns the media types of the success responses of `m` that are not
+/// JSON, each once, for the `Accept` header of a request for text or bytes.
+pub(crate) fn accept(m: Method<'_>) -> Vec<&str> {
+    let mut types = Vec::new();
+    for content in m.responses().flat_map(|r| r.contents()) {
+        if !types.contains(&content.media_type()) {
+            types.push(content.media_type());
+        }
+    }
+    types
+}
+
+/// Reports whether a media type is text: `text/*`, XML, JavaScript, a PEM
+/// file or an email, and `string`, as some documents write `text/plain`.
+pub(crate) fn is_text(media_type: &str) -> bool {
+    let essence = essence(media_type);
+    essence.starts_with("text/")
+        || essence.ends_with("+xml")
+        || matches!(
+            essence.as_str(),
+            "string" | "application/xml" | "application/javascript" | "application/x-pem-file" | "message/rfc822"
+        )
+}
+
+/// Returns the media type's essence, lower case and without parameters.
+fn essence(media_type: &str) -> String {
+    media_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase()
+}
+
+/// Returns the content a body is sent as, and its encoding: JSON when it
+/// has it, or else multipart, or else a form, or else its first media type
+/// as it is.
+fn chosen(body: forge::Body<'_>) -> Option<(forge::Content<'_>, Encoding)> {
+    if let Some(content) = body.json() {
+        return Some((content, Encoding::Json));
+    }
+    let find = |ty: &str| body.contents().find(|c| essence(c.media_type()) == ty);
+    if let Some(content) = find("multipart/form-data") {
+        return Some((content, Encoding::Multipart));
+    }
+    if let Some(content) = find("application/x-www-form-urlencoded") {
+        return Some((content, Encoding::Form));
+    }
+    let content = body.contents().next()?;
+    Some((
+        content,
+        Encoding::Raw {
+            text: is_text(content.media_type()),
+        },
+    ))
+}
+
+/// Returns the fields of a multipart or form body of type `t`, following
+/// models and merging the members of an intersection, or `None` when `t`
+/// has no fixed fields.
+fn parts(t: Type<'_>) -> Option<Vec<Part<'_>>> {
+    fn walk<'f>(t: Type<'f>, parts: &mut Vec<Part<'f>>, seen: &mut HashSet<Model<'f>>) -> bool {
+        match t {
+            Type::Object(object) => {
+                for field in object.fields().filter(|&f| kept(f)) {
+                    match parts.iter_mut().find(|p| p.first().wire_name() == field.wire_name()) {
+                        Some(part) => part.fields.push(field),
+                        None => parts.push(Part { fields: vec![field] }),
+                    }
+                }
+                true
+            }
+            Type::Model(m) => seen.insert(m) && walk(m.ty(), parts, seen),
+            Type::Intersection(intersection) => intersection.members().all(|m| walk(m, parts, seen)),
+            _ => false,
+        }
+    }
+    let mut parts = Vec::new();
+    walk(t, &mut parts, &mut HashSet::new()).then_some(parts)
+}
+
+/// Prints the parts of a multipart or form body, each on a line of its own
+/// after its documentation, leaving out read-only ones.
+fn print_parts(f: &mut File, parts: &[Part<'_>]) {
+    for part in parts.iter().filter(|p| !p.is_read_only()) {
+        let field = part.first();
+        f.doc(&doc(field.description(), field.is_deprecated()));
+        p!(f, part_member(part), ";");
+    }
+}
+
+/// Returns the parts of a multipart or form body as an object type.
+fn parts_type(parts: &[Part<'_>]) -> Fragment {
+    let members = parts.iter().filter(|p| !p.is_read_only()).map(part_member);
+    frag!("{ ", join("; ", members), " }")
+}
+
+/// Returns a part as a property of an object type, without the `;` after
+/// it: a binary value is a file, and anything else is as JSON has it.
+fn part_member(part: &Part<'_>) -> Fragment {
+    let ty = join(" & ", part.fields.iter().map(|f| part_type(f.ty())));
+    frag!(
+        key(&part.first().name().camel()),
+        if part.is_required() { ": " } else { "?: " },
+        ty
+    )
+}
+
+/// Reports whether a value of `t` is binary content, or may be.
+fn binary(t: Type<'_>) -> bool {
+    match t {
+        Type::Scalar(Scalar::Binary) => true,
+        Type::Model(m) => binary(m.ty()),
+        Type::Union(union) => union.members().any(binary),
+        _ => false,
+    }
+}
+
+impl Part<'_> {
+    /// Reports whether the part is a file, or files: its value is binary
+    /// content, or an array of it.
+    pub(crate) fn is_file(&self) -> bool {
+        self.fields.iter().any(|f| match f.ty() {
+            Type::Array(array) => binary(array.elem()),
+            t => binary(t),
+        })
+    }
+
+    /// Returns the part's name on the wire.
+    pub(crate) fn wire_name(&self) -> &str {
+        self.first().wire_name()
+    }
+}
+
+/// Returns the type of a part's value: a file for binary content, files
+/// for an array of it, and otherwise the type as a request has it.
+fn part_type(t: Type<'_>) -> Fragment {
+    match t {
+        Type::Array(array) if binary(array.elem()) => frag!(runtime("BinaryInput").ty(), "[]"),
+        t if binary(t) => frag!(runtime("BinaryInput").ty()),
+        t => input_typ(t, Prec::Intersection),
+    }
 }
 
 impl<'f> Request<'f> {
@@ -405,18 +654,37 @@ impl<'f> Request<'f> {
             .collect();
 
         let body = m.body().and_then(|body| {
-            let content = body.json()?;
+            let (content, encoding) = chosen(body)?;
+            let parts = match encoding {
+                Encoding::Multipart | Encoding::Form => parts(content.ty()),
+                Encoding::Json | Encoding::Raw { .. } => None,
+            };
             Some(Body {
                 ty: content.ty(),
                 media_type: content.media_type(),
                 required: body.is_required(),
                 description: body.description(),
+                encoding,
+                parts,
             })
         });
+        // forge lays out a JSON body; the fields of a multipart or form body
+        // sit next to the parameters unless one has a parameter's name, and
+        // a raw body is the field `body`.
         let flat = match &body {
             None => false,
-            Some(body) if located.is_empty() => object_like(body.ty, &mut HashSet::new()),
-            Some(_) => matches!(request, Some(Type::Intersection(_))),
+            Some(body) => match body.encoding {
+                Encoding::Json if located.is_empty() => object_like(body.ty, &mut HashSet::new()),
+                Encoding::Json => matches!(request, Some(Type::Intersection(_))),
+                Encoding::Multipart | Encoding::Form => body.parts.as_ref().is_some_and(|parts| {
+                    !parts.iter().any(|part| {
+                        located
+                            .iter()
+                            .any(|(field, _)| field.name().camel() == part.first().name().camel())
+                    })
+                }),
+                Encoding::Raw { .. } => false,
+            },
         };
 
         let mut taken = HashSet::new();
@@ -517,17 +785,4 @@ pub(crate) fn method_doc(m: Method<'_>) -> String {
         text.push_str(description);
     }
     text
-}
-
-/// Reports whether `m` is left out of the SDK: its request body, or a
-/// success response, has content, and none of it is JSON
-/// (specs/13-non-json-operations.md).
-pub(crate) fn skipped(m: Method<'_>) -> bool {
-    if let Some(body) = m.body()
-        && body.json().is_none()
-        && body.contents().len() > 0
-    {
-        return true;
-    }
-    m.responses().any(|r| r.json().is_none() && r.contents().len() > 0)
 }

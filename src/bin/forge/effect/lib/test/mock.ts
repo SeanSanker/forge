@@ -11,6 +11,10 @@ export interface Sent {
   url: string;
   headers: Record<string, string>;
   body: string | undefined;
+  /** The body's bytes, when it has them. */
+  bytes: Uint8Array | undefined;
+  /** The body's form data, when it is multipart. */
+  form: FormData | undefined;
 }
 
 /**
@@ -20,8 +24,10 @@ export interface Sent {
 export function mockWith(handler: (request: Sent, index: number) => Response) {
   const sent: Sent[] = [];
   const client = HttpClient.make((request, url) => {
-    const body = request.body._tag === 'Uint8Array' ? new TextDecoder().decode(request.body.body) : undefined;
-    const entry = { method: request.method, url: url.href, headers: { ...request.headers }, body };
+    const bytes = request.body._tag === 'Uint8Array' ? request.body.body : undefined;
+    const body = bytes === undefined ? undefined : new TextDecoder().decode(bytes);
+    const form = request.body._tag === 'FormData' ? request.body.formData : undefined;
+    const entry = { method: request.method, url: url.href, headers: { ...request.headers }, body, bytes, form };
     sent.push(entry);
     return Effect.succeed(HttpClientResponse.fromWeb(request, handler(entry, sent.length - 1)));
   });

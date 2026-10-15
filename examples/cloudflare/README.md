@@ -12,9 +12,9 @@ It's an experiment, and it isn't affiliated with or endorsed by Cloudflare.
 forge openapi.json --target effect --out sdk
 ```
 
-From Cloudflare's document, that takes about a second and writes 3,094 typed
-methods in 1,304 groups: one for each operation with JSON bodies (forge leaves
-out the others). The whole SDK typechecks in about two seconds.
+From Cloudflare's document, that takes about a second and writes 3,117 typed
+methods in 1,303 groups, one for every operation, uploads and downloads
+included. The whole SDK typechecks in about two seconds.
 
 ## What it looks like
 
@@ -211,6 +211,25 @@ program.pipe(Effect.provide(Fake));
 - **Requests leave out read-only fields**, such as a Worker's `id` and
   `created_on`: 233 models have an input type for requests, such as
   `WorkersWorkerInput`, and responses keep the full model.
+- **Uploads and downloads** are typed too. A multipart body's fields sit
+  next to the parameters, with files as `Blob`, `File`, `Uint8Array` or a
+  string, and objects sent as JSON parts; bytes come back as a `Uint8Array`,
+  and text as a string.
+
+  ```ts
+  Effect.gen(function* () {
+    yield* api.kv.keys.put({ accountId, namespaceId, keyName: 'greeting', value: 'héllo', metadata: { by: 'forge' } });
+    const bytes = yield* api.kv.keys.get({ accountId, namespaceId, keyName: 'greeting' }); // Uint8Array
+
+    yield* api.workers.legacy.scripts.update({
+      accountId,
+      scriptName,
+      metadata: { mainModule: 'worker.js', compatibilityDate: '2026-10-01' },
+      files: [new File([source], 'worker.js', { type: 'application/javascript+module' })],
+    });
+  });
+  ```
+
 - **The Promise client is still there.** The Effect client is generated next
   to it, from the same types and codecs.
 
@@ -280,8 +299,6 @@ one that lasts an hour, with no sign-up.
 ## Limits
 
 - It's a prototype on a fork, not a published package.
-- Operations without JSON bodies aren't in the SDK, as in forge's TypeScript
-  target.
 - About 20 operations whose document describes a bare array still come back
   with Cloudflare's wrapper, since the envelope hook can't tell them apart.
 - Most listings page by page number. Deleting items while streaming such a

@@ -1,3 +1,4 @@
+export { type BinaryInput, type Encoding } from './body.js';
 export {
   array,
   bytes,

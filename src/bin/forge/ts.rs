@@ -160,7 +160,8 @@ fn request_options() -> Ident {
 
 /// The sources of the runtime library, by path in lib/src
 /// (specs/12-runtime-library.md).
-const RUNTIME: [(&str, &str); 6] = [
+const RUNTIME: [(&str, &str); 7] = [
+    ("body.ts", include_str!("ts/lib/src/body.ts")),
     ("codec.ts", include_str!("ts/lib/src/codec.ts")),
     ("dates.ts", include_str!("ts/lib/src/dates.ts")),
     ("error.ts", include_str!("ts/lib/src/error.ts")),

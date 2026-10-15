@@ -33,6 +33,23 @@ server sets, such as an `id`: a model with such a field, directly or in a
 model it holds, has an input type for requests, such as `ThingInput` for
 `Thing`, in its group's `inputs.ts`. Responses have the model itself.
 
+Bodies that aren't JSON are typed and sent too. A request's body is JSON
+when the document has it, or else multipart form data, a URL-encoded form,
+or its first media type as it is:
+
+- the fields of a multipart or form body sit next to the parameters, unless
+  one has a parameter's name, when they are the field `body`. A binary value
+  is a `BinaryInput` (`Blob | Uint8Array | ArrayBuffer | string`), sent as a
+  file named after a `File`'s name or else the field; an object is a JSON
+  part; anything else is text;
+- a raw body is the field `body`: a string for a text media type, and a
+  `BinaryInput` otherwise, sent with a Blob's own type or the document's.
+
+A success response that isn't JSON is read as a `string` when every media
+type the document gives it is text (`text/*`, XML, JavaScript and the like),
+and as a `Uint8Array` otherwise, asked for with `Accept`. Errors are read as
+before.
+
 A `date-time` is an Effect `DateTime.Utc`, to the millisecond, so an SDK
 needs no `Temporal`, which Node has only behind a flag and Workers doesn't
 have. A string without an offset, or that isn't a real date and time, stays

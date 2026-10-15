@@ -1,3 +1,4 @@
+import { type BinaryInput, type Encoding, formData, rawBytes, urlEncoded } from './body.js';
 import { type Codec, isRecord, parse, set, toBase64 } from './codec.js';
 import { ApiError, errorMessage } from './error.js';
 import { unwrapEnvelope } from './hooks/envelope.js';
@@ -103,7 +104,18 @@ export interface Operation {
    */
   body?: 'flat' | 'nested';
   /**
-   * The media type of the body, when not application/json.
+   * How a body that is not JSON is sent: as multipart form data, as
+   * URL-encoded form fields, or as the value itself. JSON when absent.
+   */
+  encoding?: Encoding;
+  /**
+   * The fields of a multipart body, by wire name, that are files, so a
+   * string in one is sent as a file rather than as text.
+   */
+  files?: readonly string[];
+  /**
+   * The media type of the body, when not application/json. A multipart
+   * body has none, as its form data sets it.
    */
   contentType?: string;
   /**
@@ -115,6 +127,15 @@ export interface Operation {
    * and absent when the operation has no response body.
    */
   response?: Codec | null;
+  /**
+   * What a success response has when it is not JSON: text, read as a
+   * string, or bytes, read as a Uint8Array.
+   */
+  responseType?: 'text' | 'bytes';
+  /**
+   * The Accept header of an operation whose response is not JSON.
+   */
+  accept?: string;
   /**
    * The declared error responses, by status, range such as "4XX", or
    * "default": the codec of the body, true for a JSON body with nothing to
@@ -271,13 +292,32 @@ export class Transport implements Sender {
 
   async #send(operation: Operation, request: Fields, options: RequestOptions | undefined): Promise<unknown> {
     const url = this.#url(operation, request, options);
-    const headers = new Headers({ accept: 'application/json' });
+    const headers = new Headers({ accept: operation.accept ?? 'application/json' });
     headers.set('authorization', `Bearer ${this.#options.token}`);
     const init: RequestInit = { method: operation.method, headers };
     const body = this.#body(operation, request);
     if (body !== undefined) {
-      headers.set('content-type', operation.contentType ?? 'application/json');
-      init.body = JSON.stringify(body);
+      switch (operation.encoding) {
+        case 'multipart':
+          // fetch sets the content type, with the boundary.
+          init.body = formData(body as Fields, operation.files);
+          break;
+        case 'form':
+          headers.set('content-type', 'application/x-www-form-urlencoded');
+          init.body = urlEncoded(body as Fields);
+          break;
+        case 'raw': {
+          const raw = await rawBytes(body as BinaryInput, operation.contentType);
+          if (raw.contentType !== undefined) {
+            headers.set('content-type', raw.contentType);
+          }
+          init.body = raw.bytes as Uint8Array<ArrayBuffer>;
+          break;
+        }
+        default:
+          headers.set('content-type', operation.contentType ?? 'application/json');
+          init.body = JSON.stringify(body);
+      }
     }
     new Headers(this.#options.headers).forEach((value, key) => {
       headers.set(key, value);
@@ -296,6 +336,12 @@ export class Transport implements Sender {
     }
     if (operation.response === undefined) {
       return undefined;
+    }
+    if (operation.responseType === 'bytes') {
+      return new Uint8Array(await response.arrayBuffer());
+    }
+    if (operation.responseType === 'text') {
+      return await response.text();
     }
     const text = await response.text();
     if (text === '') {

@@ -733,3 +733,96 @@ describe('Transport paginate', () => {
     assert.deepEqual(seen, [1]);
   });
 });
+
+describe('bodies and responses that are not JSON', () => {
+  test('sends a multipart body as form data, leaving its content type to fetch', async () => {
+    const { fetch, calls } = fake(new Response(null, { status: 204 }));
+    const upload: Operation = {
+      method: 'PUT',
+      route: '/scripts/{name}',
+      body: 'flat',
+      encoding: 'multipart',
+      request: object([['metadata', null, object([['main_module', 'mainModule']])]]),
+    };
+    await client(fetch).send(
+      upload,
+      {
+        name: 'demo',
+        metadata: { mainModule: 'worker.js' },
+        files: [new File(['export default {}'], 'worker.js')],
+      },
+      undefined,
+    );
+    const body = calls[0]!.body;
+    assert.ok(body instanceof FormData);
+    assert.equal(body.get('metadata'), '{"main_module":"worker.js"}');
+    assert.equal((body.get('files') as File).name, 'worker.js');
+    assert.equal(calls[0]!.headers.has('content-type'), false);
+    assert.equal(calls[0]!.url.pathname, '/v1/scripts/demo');
+  });
+
+  test('sends a form as URL-encoded fields', async () => {
+    const { fetch, calls } = fake(new Response(null, { status: 204 }));
+    await client(fetch).send(
+      {
+        method: 'POST',
+        route: '/logos',
+        body: 'flat',
+        encoding: 'form',
+        contentType: 'application/x-www-form-urlencoded',
+      },
+      { tag: 'a', url: 'https://x.test' },
+      undefined,
+    );
+    assert.ok(calls[0]!.body instanceof URLSearchParams);
+    assert.equal(String(calls[0]!.body), 'tag=a&url=https%3A%2F%2Fx.test');
+    assert.equal(calls[0]!.headers.get('content-type'), 'application/x-www-form-urlencoded');
+  });
+
+  test("sends a raw body as bytes, with a Blob's type or the operation's", async () => {
+    const { fetch, calls } = fake(json({ etag: 'e' }), json({ etag: 'f' }));
+    const put: Operation = {
+      method: 'PUT',
+      route: '/objects/{key}',
+      body: 'nested',
+      encoding: 'raw',
+      contentType: 'application/octet-stream',
+      response: null,
+    };
+    const transport = client(fetch);
+    assert.deepEqual(await transport.send(put, { key: 'a', body: new Uint8Array([1, 2]) }, undefined), { etag: 'e' });
+    await transport.send(put, { key: 'b', body: new Blob(['<p>'], { type: 'text/html' }) }, undefined);
+    assert.deepEqual(calls[0]!.body, new Uint8Array([1, 2]));
+    assert.equal(calls[0]!.headers.get('content-type'), 'application/octet-stream');
+    assert.equal(calls[1]!.headers.get('content-type'), 'text/html');
+  });
+
+  test('reads bytes and text, asking for their media types', async () => {
+    const { fetch, calls } = fake(new Response(new Uint8Array([0, 255])), new Response('hello'));
+    const transport = client(fetch);
+    const bytes = await transport.send(
+      {
+        ...get,
+        responseType: 'bytes',
+        accept: 'application/octet-stream',
+      },
+      undefined,
+      undefined,
+    );
+    assert.deepEqual(bytes, new Uint8Array([0, 255]));
+    assert.equal(calls[0]!.headers.get('accept'), 'application/octet-stream');
+    assert.equal(
+      await transport.send({ ...get, responseType: 'text', accept: 'text/plain' }, undefined, undefined),
+      'hello',
+    );
+  });
+
+  test('still reads a JSON error from an operation that returns bytes', async () => {
+    const { fetch } = fake(json({ errors: [{ code: 10009, message: 'key not found' }] }, { status: 404 }));
+    const error: unknown = await client(fetch)
+      .send({ ...get, responseType: 'bytes', errors: { '4XX': true } }, undefined, undefined)
+      .catch((e: unknown) => e);
+    assert.ok(error instanceof ApiError);
+    assert.equal(error.status, 404);
+  });
+});

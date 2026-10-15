@@ -5,7 +5,7 @@ use std::collections::HashSet;
 use forge::ts::{File, Ident, p};
 
 use super::Node;
-use super::client::{request_name, response_name, skipped};
+use super::client::{request_name, response_name};
 use super::inputs::input_models;
 use super::types::input_ident;
 
@@ -27,10 +27,8 @@ pub(super) fn index(node: Node<'_>) -> File {
     export(&mut f, "export", &["createClient".to_owned()], "./client.js");
     let mut names = vec!["Client".to_owned(), "ClientOptions".to_owned()];
     for m in node.methods() {
-        if !skipped(m) {
-            names.push(request_name(m));
-            names.push(response_name(m));
-        }
+        names.push(request_name(m));
+        names.push(response_name(m));
     }
     export(&mut f, "export type", &names, "./client.js");
 

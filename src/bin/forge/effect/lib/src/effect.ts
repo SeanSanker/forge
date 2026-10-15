@@ -20,6 +20,7 @@ import {
 } from 'effect/http';
 
 import type { Auth, AuthError } from './auth.js';
+import { type BinaryInput, formData, rawBytes, urlEncoded } from './body.js';
 import { isRecord, parse, set, toBase64 } from './codec.js';
 import { errorMessage } from './error.js';
 import { unwrapEnvelope } from './hooks/envelope.js';
@@ -283,7 +284,7 @@ export class EffectTransport {
     options: RequestOptions | undefined,
     sending: SendOptions,
   ): Effect.Effect<unknown, ClientError> {
-    const headers = new Headers({ accept: 'application/json' });
+    const headers = new Headers({ accept: operation.accept ?? 'application/json' });
     new Headers(this.#options.headers).forEach((value, key) => {
       headers.set(key, value);
     });
@@ -298,18 +299,15 @@ export class EffectTransport {
         ? url(this.#baseUrl, operation, request, this.#options, options)
         : link(this.#baseUrl, sending.link, this.#options, options)
     ).href;
-    let req = HttpClientRequest.make(operation.method as HttpMethod.HttpMethod)(target, { headers });
-    const body = bodyOf(operation, request);
-    if (body !== undefined) {
-      // A content type in the headers wins, as in the Promise client.
-      const contentType = headers.get('content-type') ?? operation.contentType ?? 'application/json';
-      req = HttpClientRequest.bodyText(req, JSON.stringify(body), contentType);
-    }
+    const req = HttpClientRequest.make(operation.method as HttpMethod.HttpMethod)(target, { headers });
 
-    return Effect.flatMap(this.#execute(req, operation, sending.auth ?? true), (response) =>
-      response.status < 200 || response.status > 299
-        ? Effect.flatMap(apiError(operation, response), Effect.fail)
-        : decode(operation, response),
+    return withBody(req, operation, bodyOf(operation, request), headers.get('content-type')).pipe(
+      Effect.flatMap((req) => this.#execute(req, operation, sending.auth ?? true)),
+      Effect.flatMap((response) =>
+        response.status < 200 || response.status > 299
+          ? Effect.flatMap(apiError(operation, response), Effect.fail)
+          : decode(operation, response),
+      ),
     );
   }
 
@@ -498,6 +496,50 @@ function retryAfter(response: HttpClientResponse.HttpClientResponse): number | u
 // What follows is the Promise client's Transport, with Effect in place of
 // fetch and await.
 
+// Returns the request with its body, as the operation sends it. A content
+// type in the headers wins, as in the Promise client, except for a
+// multipart body, whose content type has the boundary of its form data.
+function withBody(
+  req: HttpClientRequest.HttpClientRequest,
+  operation: Operation,
+  body: unknown,
+  contentType: string | null,
+): Effect.Effect<HttpClientRequest.HttpClientRequest> {
+  if (body === undefined) {
+    return Effect.succeed(req);
+  }
+  switch (operation.encoding) {
+    case 'multipart':
+      return Effect.succeed(
+        HttpClientRequest.bodyFormData(
+          HttpClientRequest.removeHeader(req, 'content-type'),
+          formData(body as Fields, operation.files),
+        ),
+      );
+    case 'form':
+      return Effect.succeed(
+        HttpClientRequest.bodyText(
+          req,
+          urlEncoded(body as Fields).toString(),
+          contentType ?? 'application/x-www-form-urlencoded',
+        ),
+      );
+    case 'raw':
+      return Effect.map(
+        Effect.promise(() => rawBytes(body as BinaryInput, contentType ?? operation.contentType)),
+        (raw) => HttpClientRequest.bodyUint8Array(req, raw.bytes, raw.contentType),
+      );
+    default:
+      return Effect.succeed(
+        HttpClientRequest.bodyText(
+          req,
+          JSON.stringify(body),
+          contentType ?? operation.contentType ?? 'application/json',
+        ),
+      );
+  }
+}
+
 function decode(
   operation: Operation,
   response: HttpClientResponse.HttpClientResponse,
@@ -505,6 +547,12 @@ function decode(
   const codec = operation.response;
   if (codec === undefined) {
     return Effect.void;
+  }
+  if (operation.responseType === 'bytes') {
+    return Effect.map(response.arrayBuffer, (buffer) => new Uint8Array(buffer));
+  }
+  if (operation.responseType === 'text') {
+    return response.text;
   }
   return Effect.flatMap(response.text, (text): Effect.Effect<unknown, ApiError> => {
     if (text === '') {
