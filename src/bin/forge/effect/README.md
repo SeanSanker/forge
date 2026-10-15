@@ -18,6 +18,7 @@ _/effect.ts      the Effect transport: sends operations through Effect's HttpCli
 _/auth.ts        Auth: bearer, basic, API keys, cached tokens, OAuth2 client credentials
 _/paginate.ts    the Streams of paginated methods
 effect.ts        the entry point: Api (the client as an Effect service), Auth, ApiError
+transport.ts     Transport (what each group's bind sends with, as a service) and Security
 <group>/effect.ts  the group's Effect Client and its bind
 ```
 
@@ -51,6 +52,26 @@ forge openapi.json --target effect --out sdk --name @acme/pets-sdk   # "@acme/pe
 Without `--name`, the API's title (`info.title`) keys it. Keys must differ
 between the SDKs an app uses together; each SDK exports its client as `Api`,
 so import each under its own name.
+
+### Only some groups
+
+`effect.ts` imports every group, so a bundle that uses `Api` holds the whole
+SDK. A program that uses a few groups, such as a Worker, can bind just those
+to `Transport`, from `transport.ts`, and a bundler leaves the others out:
+
+```ts
+import { bind as bindKv } from './sdk/kv/effect.js';
+import { Transport } from './sdk/transport.js';
+
+const program = Effect.gen(function* () {
+  const kv = yield* Effect.map(Transport, bindKv);
+  return yield* kv.namespaces.list({ accountId });
+}).pipe(Effect.provide(Transport.layer({ auth }).pipe(Layer.provide(FetchHttpClient.layer))));
+```
+
+`Transport` has the same `make`, `layer` and `layerConfig` as `Api`, and
+`Api` is made from it. For Cloudflare's API, a Worker bundle with the whole
+SDK is about 280 KB gzipped; with only KV and D1, about 100 KB.
 
 ## Extending a client
 

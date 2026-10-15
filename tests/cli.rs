@@ -160,9 +160,18 @@ fn effect() {
             r#"export class Api extends Context.Service<Api, Client>()("Shop/Api") {"#,
             "EffectTransport,",
             r#"export type { Operation } from "./_/index.js";"#,
-            "Effect.map(HttpClient.HttpClient, (client) => Api.of(bind(new EffectTransport(client, options))));",
+            r#"export { Transport } from "./transport.js";"#,
+            "Effect.map(Transport.make(options), (transport) => Api.of(bind(transport)));",
             "static readonly layerTest = (stubs: Stubs<Client>): Layer.Layer<Api> =>",
             "Layer.succeed(Api, Api.of(stub(bind, stubs)));",
+        ],
+    );
+    expect(
+        "transport.ts",
+        &[
+            r#"export class Transport extends Context.Service<Transport, EffectTransport>()("Shop/Transport") {"#,
+            "Effect.map(HttpClient.HttpClient, (client) => new EffectTransport(client, options));",
+            "Layer.effect(Transport, Effect.flatMap(Effect.isEffect(options) ? options : Effect.succeed(options), Transport.make));",
         ],
     );
     expect(
@@ -321,6 +330,11 @@ fn effect_name() {
         root.contains(r#"Context.Service<Api, Client>()("@acme/shop-sdk/Api")"#),
         "{root}"
     );
+    let transport = std::fs::read_to_string(out.join("transport.ts")).unwrap();
+    assert!(
+        transport.contains(r#"Context.Service<Transport, EffectTransport>()("@acme/shop-sdk/Transport")"#),
+        "{transport}"
+    );
     std::fs::remove_dir_all(&out).unwrap();
 }
 
@@ -352,14 +366,24 @@ fn effect_security() {
     let read = |name: &str| std::fs::read_to_string(out.join(name)).unwrap();
     let root = read("effect.ts");
     for snippet in [
-        "apiToken: (token: Secret): Auth => bearer(token),",
-        r#"key: (key: Secret): Auth => apiKey(key, { query: "api_key" }),"#,
-        r#"new EffectTransport(client, options, "https://shop.test/v1")"#,
+        r#"export { Security, Transport } from "./transport.js";"#,
         r#"Api.layer(Effect.map(Config.Redacted("SHOP_TOKEN"), (secret) => ({ ...options, auth: Security.apiToken(secret) })));"#,
     ] {
         assert!(root.contains(snippet), "effect.ts has no {snippet:?}:\n{root}");
     }
-    assert!(!root.contains("oidc"), "{root}");
+    let transport = read("transport.ts");
+    for snippet in [
+        "apiToken: (token: Secret): Auth => bearer(token),",
+        r#"key: (key: Secret): Auth => apiKey(key, { query: "api_key" }),"#,
+        r#"new EffectTransport(client, options, "https://shop.test/v1")"#,
+        r#"Transport.layer(Effect.map(Config.Redacted("SHOP_TOKEN"), (secret) => ({ ...options, auth: Security.apiToken(secret) })));"#,
+    ] {
+        assert!(
+            transport.contains(snippet),
+            "transport.ts has no {snippet:?}:\n{transport}"
+        );
+    }
+    assert!(!root.contains("oidc") && !transport.contains("oidc"), "{transport}");
     let items = read("items/effect.ts");
     assert!(
         items.contains("transport.send(ListOperation, request, options, { auth: false })"),

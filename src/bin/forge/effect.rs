@@ -46,6 +46,7 @@ impl Plugin for Generator {
             self.name.as_deref(),
             &self.security,
         )?));
+        files.push(File::Ts(transport(forge, self.name.as_deref(), &self.security)));
         files.extend(RUNTIME.iter().map(|&(path, source)| File::Runtime {
             path: RUNTIME_DIR.sub(path).as_str().to_owned(),
             content: format!("{PREAMBLE}{source}"),
@@ -78,6 +79,7 @@ const PAGINATE: Module = Module::new("_/paginate.ts");
 const AUTH: Module = Module::new("_/auth.ts");
 const EFFECT: Module = Module::new("effect");
 const HTTP: Module = Module::new("effect/http");
+const TRANSPORT: Module = Module::new("transport.ts");
 
 /// A method of a group's Effect client, and how it pages.
 struct Entry<'f> {
@@ -147,6 +149,11 @@ fn effect(node: Node<'_>, name: Option<&str>, security: &Security) -> Result<TsF
             r#"export { ApiError, type ClientError, type ClientOptions, EffectTransport, type Reason, type RequestOptions, type Stubs, type Unexpected } from "./_/effect.js";"#
         );
         p!(f, r#"export type { Operation } from "./_/index.js";"#);
+        if security.schemes.is_empty() {
+            p!(f, r#"export { Transport } from "./transport.js";"#);
+        } else {
+            p!(f, r#"export { Security, Transport } from "./transport.js";"#);
+        }
         p!(f);
     }
     client_interface(&mut f, &entries, &groups, &group_names);
@@ -164,7 +171,7 @@ fn effect(node: Node<'_>, name: Option<&str>, security: &Security) -> Result<TsF
     }
     if let Node::Root(forge) = node {
         p!(f);
-        api(&mut f, &service_key(forge, name), forge, security);
+        api(&mut f, &service_key(forge, name, "Api"), forge, security);
     }
     Ok(f)
 }
@@ -431,13 +438,10 @@ fn api(f: &mut TsFile, key: &str, forge: &Forge, security: &Security) {
     let options = EFFECT_RUNTIME.ident("ClientOptions").ty();
     let api = f.ident("Api");
     let client = f.ident("Client");
-    if !security.schemes.is_empty() {
-        declare_security(f, &security.schemes);
-        p!(f);
-    }
     f.doc(
         "The client of the API, as an Effect service. Each method returns an Effect, and sends with the HttpClient \
-         that the client was made with.",
+         that the client was made with. A program that uses only a few groups can bind them to a Transport instead, \
+         so a bundler leaves the others out.",
     );
     p!(
         f,
@@ -454,11 +458,6 @@ fn api(f: &mut TsFile, key: &str, forge: &Forge, security: &Security) {
         ") {"
     );
     f.indent(|f| {
-        let base_url = if forge.base_url.is_empty() {
-            String::new()
-        } else {
-            format!(", {}", js_string(&forge.base_url))
-        };
         let mut text = "Makes the client with the HttpClient in context.".to_owned();
         if !forge.base_url.is_empty() {
             text.push_str(&format!(" Its baseUrl is {} by default.", forge.base_url));
@@ -481,16 +480,12 @@ fn api(f: &mut TsFile, key: &str, forge: &Forge, security: &Security) {
                 f,
                 effect,
                 ".map(",
-                http_client,
-                ".HttpClient, (client) => ",
+                TRANSPORT.ident("Transport"),
+                ".make(options), (transport) => ",
                 api,
                 ".of(",
                 f.ident("bind"),
-                "(new ",
-                EFFECT_RUNTIME.ident("EffectTransport"),
-                "(client, options",
-                base_url,
-                "))));"
+                "(transport)));"
             );
         });
         p!(f);
@@ -563,10 +558,133 @@ fn api(f: &mut TsFile, key: &str, forge: &Forge, security: &Security) {
             .as_deref()
             .and_then(|key| security.schemes.iter().find(|scheme| scheme.key == key));
         if let Some(scheme) = default {
-            layer_config(f, scheme);
+            layer_config(f, scheme, "client", f.ident("Api"), TRANSPORT.ident("Security"));
         }
     });
     p!(f, "}");
+}
+
+/// Returns transport.ts: Security, and Transport, the EffectTransport of the
+/// API as an Effect service, which a program can bind single groups to.
+fn transport(forge: &Forge, name: Option<&str>, security: &Security) -> TsFile {
+    let mut f = TsFile::new(Node::Root(forge).dir().sub("transport.ts"));
+    let effect = EFFECT.ident("Effect");
+    let layer = EFFECT.ident("Layer");
+    let http_client = HTTP.ident("HttpClient");
+    let options = EFFECT_RUNTIME.ident("ClientOptions").ty();
+    let effect_transport = EFFECT_RUNTIME.ident("EffectTransport");
+    let transport = f.ident("Transport");
+    if !security.schemes.is_empty() {
+        declare_security(&mut f, &security.schemes);
+        p!(f);
+    }
+    f.doc(
+        "The transport of the API, as an Effect service: what each group's `bind` sends with. Binding only the \
+         groups a program uses keeps the others out of its bundle:\n\n```ts\nimport { bind } from \"./kv/effect.js\";\n\n\
+         const kv = yield* Effect.map(Transport, bind);\n```",
+    );
+    p!(
+        f,
+        "export class ",
+        transport.clone(),
+        " extends ",
+        EFFECT.ident("Context"),
+        ".Service<",
+        transport.clone(),
+        ", ",
+        effect_transport.clone(),
+        ">()(",
+        js_string(&service_key(forge, name, "Transport")),
+        ") {"
+    );
+    f.indent(|f| {
+        let base_url = if forge.base_url.is_empty() {
+            String::new()
+        } else {
+            format!(", {}", js_string(&forge.base_url))
+        };
+        let mut text = "Makes the transport with the HttpClient in context.".to_owned();
+        if !forge.base_url.is_empty() {
+            text.push_str(&format!(" Its baseUrl is {} by default.", forge.base_url));
+        }
+        f.doc(&text);
+        p!(
+            f,
+            "static readonly make = (options: ",
+            options.clone(),
+            "): ",
+            effect.clone(),
+            ".Effect<",
+            effect_transport.clone(),
+            ", never, ",
+            http_client.clone(),
+            ".HttpClient> =>"
+        );
+        f.indent(|f| {
+            p!(
+                f,
+                effect.clone(),
+                ".map(",
+                http_client.clone(),
+                ".HttpClient, (client) => new ",
+                effect_transport.clone(),
+                "(client, options",
+                base_url,
+                "));"
+            );
+        });
+        p!(f);
+        f.doc("Returns a layer of the transport, from its options or an Effect of them, such as a Config.");
+        p!(f, "static readonly layer = <E = never, R = never>(");
+        f.indent(|f| {
+            p!(
+                f,
+                "options: ",
+                options.clone(),
+                " | ",
+                effect.clone(),
+                ".Effect<",
+                options.clone(),
+                ", E, R>,"
+            );
+        });
+        p!(
+            f,
+            "): ",
+            layer.clone(),
+            ".Layer<",
+            f.ident("Transport"),
+            ", E, R | ",
+            http_client.clone(),
+            ".HttpClient> =>"
+        );
+        f.indent(|f| {
+            p!(
+                f,
+                layer.clone(),
+                ".effect(",
+                f.ident("Transport"),
+                ", ",
+                effect.clone(),
+                ".flatMap(",
+                effect.clone(),
+                ".isEffect(options) ? options : ",
+                effect.clone(),
+                ".succeed(options), ",
+                f.ident("Transport"),
+                ".make));"
+            );
+        });
+        let default = security
+            .default
+            .as_deref()
+            .and_then(|key| security.schemes.iter().find(|scheme| scheme.key == key));
+        if let Some(scheme) = default {
+            layer_config(f, scheme, "transport", f.ident("Transport"), f.ident("Security"));
+        }
+    });
+    p!(f, "}");
+    f
 }
 
 /// Declares Security: for each security scheme the SDK can authenticate
@@ -642,7 +760,7 @@ fn declare_security(f: &mut TsFile, schemes: &[Scheme]) {
 /// Declares layerConfig, which reads the credentials of `scheme`, the one
 /// the API asks for first, from the environment variables its document
 /// names, when it names them all.
-fn layer_config(f: &mut TsFile, scheme: &Scheme) {
+fn layer_config(f: &mut TsFile, scheme: &Scheme, what: &str, class: Ident, security: Ident) {
     let config = EFFECT.ident("Config");
     let (vars, read, args): (Vec<&str>, Fragment, &str) = match &scheme.kind {
         SchemeKind::Bearer { env: Some(env) } | SchemeKind::ApiKey { env: Some(env), .. } => (
@@ -678,7 +796,7 @@ fn layer_config(f: &mut TsFile, scheme: &Scheme) {
     let names: Vec<String> = vars.iter().map(|var| format!("`{var}`")).collect();
     p!(f);
     f.doc(&format!(
-        "Returns a layer of the client that authenticates with {}, from the config {}.",
+        "Returns a layer of the {what} that authenticates with {}, from the config {}.",
         scheme.name,
         names.join(" and ")
     ));
@@ -691,7 +809,7 @@ fn layer_config(f: &mut TsFile, scheme: &Scheme) {
     f.indent(|f| {
         p!(
             f,
-            f.ident("Api"),
+            class,
             ".layer(",
             EFFECT.ident("Effect"),
             ".map(",
@@ -699,7 +817,7 @@ fn layer_config(f: &mut TsFile, scheme: &Scheme) {
             ", ",
             args,
             "({ ...options, auth: ",
-            f.ident("Security"),
+            security,
             ".",
             scheme.name.as_str(),
             call,
@@ -711,16 +829,16 @@ fn layer_config(f: &mut TsFile, scheme: &Scheme) {
 /// Returns the key of the Api service: the name of the SDK's package, or
 /// else the title of the API, the first paragraph of its description,
 /// followed by `/Api`, as Effect keys services by their module.
-fn service_key(forge: &Forge, name: Option<&str>) -> String {
+fn service_key(forge: &Forge, name: Option<&str>, service: &str) -> String {
     if let Some(name) = name {
-        return format!("{}/Api", name.trim_end_matches('/'));
+        return format!("{}/{service}", name.trim_end_matches('/'));
     }
     let title = forge.description.split("\n\n").next().unwrap_or_default();
     let title = title.split_whitespace().collect::<Vec<_>>().join(" ");
     if title.is_empty() {
-        "Api".to_owned()
+        service.to_owned()
     } else {
-        format!("{title}/Api")
+        format!("{title}/{service}")
     }
 }
 
