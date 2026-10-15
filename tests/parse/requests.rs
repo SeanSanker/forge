@@ -112,13 +112,20 @@ fn param_field_is_named_by_x_fern_parameter_name() {
         r#"{
           "openapi": "3.0.3", "info": {"title": "t", "version": "1"},
           "paths": {"/a": {"get": {"x-fern-sdk-group-name": "a", "x-fern-sdk-method-name": "list",
-            "parameters": [{"name": "q", "in": "query", "x-fern-parameter-name": "query", "schema": {"type": "string"}}],
+            "parameters": [{"name": "q", "in": "query", "x-fern-parameter-name": "query", "schema": {"type": "string"}},
+              {"name": "account.id", "in": "query", "x-fern-parameter-name": "accountId", "schema": {"type": "string"}},
+              {"name": "page", "in": "query", "schema": {"type": "string"}}],
             "responses": {"204": {"description": "ok"}}}}}
         }"#,
     );
 
-    let q = field(object(method(&forge, "a.list").request().unwrap()), "q");
+    let params = object(method(&forge, "a.list").request().unwrap());
+    let q = field(params, "q");
     assert_eq!(q.name(), &Name::new("query"));
+    assert!(q.is_named());
+    // An extension that spells the same words still names the field.
+    assert!(field(params, "account.id").is_named());
+    assert!(!field(params, "page").is_named());
 }
 
 #[test]

@@ -654,6 +654,7 @@ impl<'d> Builder<'d> {
                 fields.push(FieldData {
                     wire_name: self.strings.push("body"),
                     name: self.name("body"),
+                    named: false,
                     required: body.required,
                     ty: body_ty,
                     description: body.description,
@@ -781,6 +782,7 @@ impl<'d> Builder<'d> {
                 None => FieldData {
                     wire_name: self.strings.push(placeholder),
                     name: self.name(placeholder),
+                    named: false,
                     required: true,
                     ty: self.scalar(Scalar::String),
                     description: Str::default(),
@@ -936,9 +938,11 @@ impl<'d> Builder<'d> {
             description = self.schema_description(param.schema);
         }
         let wire_name = doc.str(param.name);
+        let (name, named) = self.field_name(param.field_name, wire_name);
         FieldData {
             wire_name: self.strings.push(wire_name),
-            name: self.field_name(param.field_name, wire_name),
+            name,
+            named,
             required,
             ty,
             description: self.strings.push(description),
@@ -952,15 +956,15 @@ impl<'d> Builder<'d> {
     /// Returns the name of the field of a property or parameter written as
     /// `wire_name`, whose name extension, such as `x-fern-property-name`,
     /// is `extension`. The extension gives the name if it has letters or
-    /// digits.
-    fn field_name(&mut self, extension: Str, wire_name: &'d str) -> NameId {
+    /// digits, and is then reported as true.
+    fn field_name(&mut self, extension: Str, wire_name: &'d str) -> (NameId, bool) {
         if !extension.is_empty() {
             let name = self.name(self.doc.str(extension));
             if Some(name) != self.empty_name {
-                return name;
+                return (name, true);
             }
         }
-        self.name(wire_name)
+        (self.name(wire_name), false)
     }
 
     /// Returns the name written as `text`.
@@ -1606,11 +1610,12 @@ impl<'d> Builder<'d> {
             }
             let description = self.schema_description(property);
             let flags = self.schema_flags(property);
-            let name = self.field_name(extension, wire_name);
+            let (name, named) = self.field_name(extension, wire_name);
             let ty = self.ty(property);
             fields.push(FieldData {
                 wire_name: self.strings.push(wire_name),
                 name,
+                named,
                 required: false,
                 ty,
                 description: self.strings.push(description),

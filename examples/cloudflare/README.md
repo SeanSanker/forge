@@ -262,6 +262,10 @@ one that lasts an hour, with no sign-up.
   R2 buckets, in the envelope's `result_info`. That gives 222 `All` Streams.
   Queues and Worker scripts take no page or cursor, so their lists come in
   one response.
+- `scripts/names.ts` names the 76 query parameters with `.` or `~` in their
+  names, such as `account.id`, with Fern's `x-fern-parameter-name`, so the
+  SDK has them as `accountId`; forge leaves out such a parameter that
+  nothing names.
 - `scripts/envelope.ts` replaces forge's envelope hook. Cloudflare wraps each
   payload in `{ success, errors, messages, result }`, and the document
   describes a single result without that wrapper, so the hook unwraps a result
@@ -285,10 +289,13 @@ one that lasts an hour, with no sign-up.
   `temporal-polyfill/global` first, as `src/main.ts` does. In a Worker, also
   keep in mind that `structuredClone` copies a polyfilled date as `{}`, so
   store dates in Durable Object storage as strings.
+- Request types include fields the document marks read-only, as forge's
+  TypeScript target does
+  ([cloudflare/forge#43](https://github.com/cloudflare/forge/issues/43)).
 - Query parameters with `.` or `~` in their names, such as `account.id` on
-  `GET /zones`, aren't in the SDK, and request types include fields the
-  document marks read-only. Both come from forge's TypeScript target; pass a
-  dropped parameter in the call's `query` option.
+  `GET /zones`, are typed (`accountId`), as `scripts/names.ts` names them.
+  The one templated name, `meta.<field>[<operator>]`, isn't; pass it in the
+  call's `query` option.
 
 [The effect target's README](../../src/bin/forge/effect/README.md) covers the
 generator in full: errors, auth, retries, testing and pagination.

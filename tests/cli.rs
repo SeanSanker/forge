@@ -88,6 +88,29 @@ fn ts() {
     std::fs::remove_dir_all(&out).unwrap();
 }
 
+#[test]
+fn ts_query_parameter_named_by_extension() {
+    let spec = r#"{
+      "openapi": "3.0.3", "info": {"title": "t", "version": "1"},
+      "paths": {"/zones": {"get": {"x-fern-sdk-group-name": "zones", "x-fern-sdk-method-name": "list",
+        "parameters": [
+          {"name": "account.id", "in": "query", "x-fern-parameter-name": "accountId", "schema": {"type": "string"}},
+          {"name": "name~neq", "in": "query", "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "ok"}}}}}
+    }"#;
+    let out = std::env::temp_dir().join(format!("forge-cli-ts-named-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&out);
+    let result = forge(&["-", "--target", "ts", "--out", out.to_str().unwrap()], spec);
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let client = std::fs::read_to_string(out.join("zones/client.ts")).unwrap();
+    // The named parameter is kept and sent under its wire name; the other
+    // is left to the `query` option.
+    assert!(client.contains("accountId?: string;"), "{client}");
+    assert!(client.contains(r#"query: { accountId: "account.id" },"#), "{client}");
+    assert!(!client.to_lowercase().contains("neq"), "{client}");
+    std::fs::remove_dir_all(&out).unwrap();
+}
+
 /// A document whose methods page by offset, with a page size, and by
 /// cursor, with a required parameter, and where the method `zones.settings`
 /// shares its name with a group.

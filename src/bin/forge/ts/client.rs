@@ -412,7 +412,10 @@ impl<'f> Request<'f> {
         let mut taken = HashSet::new();
         let mut params = Vec::new();
         for (field, location) in located {
-            if matches!(location, Location::Query { .. }) && !valid_name(field.wire_name()) {
+            // A query parameter whose name has other characters, such as
+            // `meta.<field>[<operator>]`, is sent through the `query`
+            // option, unless an extension names it.
+            if matches!(location, Location::Query { .. }) && !valid_name(field.wire_name()) && !field.is_named() {
                 continue;
             }
             let mut name = field.name().camel();

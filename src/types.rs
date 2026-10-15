@@ -325,6 +325,13 @@ impl<'f> Field<'f> {
         &self.forge.names[self.data.name.index()]
     }
 
+    /// Reports whether the field's name comes from an extension, such as
+    /// `x-fern-property-name` or `x-fern-parameter-name`, rather than its
+    /// wire name.
+    pub fn is_named(self) -> bool {
+        self.data.named
+    }
+
     /// Reports whether the object must have the property.
     ///
     /// A field for a parameter is required when the parameter is, and a
@@ -589,6 +596,8 @@ pub(crate) struct ObjectData {
 pub(crate) struct FieldData {
     pub(crate) wire_name: Str,
     pub(crate) name: NameId,
+    /// Whether an extension gave the name.
+    pub(crate) named: bool,
     pub(crate) required: bool,
     pub(crate) ty: TypeId,
     pub(crate) description: Str,
