@@ -247,7 +247,9 @@ fetched as the stream is read.
 - **offset**: `offset` names the request parameter. Without `step` it's a page
   number from 1; with `step`, the parameter of the page size, it's the index
   of the first item, from 0. The stream stops when `has-next-page` is false,
-  or else on an empty page or one shorter than the page size.
+  or else on an empty page or one shorter than the page size, or a page the
+  same as the one before. Deleting items while streaming pages by number
+  makes the stream skip some, so collect them first.
 - **next_uri** and **next_path**: where the response has a link to the next
   page: a URL, which may be relative to the base URL, or a path that follows
   the base URL. The stream stops when there is none, or when it doesn't

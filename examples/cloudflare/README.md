@@ -181,6 +181,18 @@ one that lasts an hour, with no sign-up.
   target.
 - About 20 operations whose document describes a bare array still come back
   with Cloudflare's wrapper, since the envelope hook can't tell them apart.
+- Most listings page by page number. Deleting items while streaming such a
+  listing moves the later items onto earlier pages, so the stream skips some:
+  collect the items first (`Stream.runCollect`), then delete them.
+- The SDK decodes date-times to `Temporal`, which Node 24 has only behind
+  `--harmony-temporal` and Workers doesn't have, so import a polyfill such as
+  `temporal-polyfill/global` first, as `src/main.ts` does. In a Worker, also
+  keep in mind that `structuredClone` copies a polyfilled date as `{}`, so
+  store dates in Durable Object storage as strings.
+- Query parameters with `.` or `~` in their names, such as `account.id` on
+  `GET /zones`, aren't in the SDK, and request types include fields the
+  document marks read-only. Both come from forge's TypeScript target; pass a
+  dropped parameter in the call's `query` option.
 
 [The effect target's README](../../src/bin/forge/effect/README.md) covers the
 generator in full: errors, auth, retries, testing and pagination.
