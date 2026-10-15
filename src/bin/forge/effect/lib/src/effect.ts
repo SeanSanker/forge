@@ -9,7 +9,7 @@
  * clients come from Effect.
  */
 
-import { Array as Arr, Cause, Data, Duration, Effect } from 'effect';
+import { Array as Arr, Cause, Data, Duration, Effect, Stream } from 'effect';
 import {
   Headers as HttpHeaders,
   HttpClient,
@@ -274,16 +274,37 @@ export class EffectTransport {
     options: RequestOptions | undefined,
     sending?: SendOptions,
   ): Effect.Effect<T, E> {
-    const send = () => this.#send(operation, (request ?? {}) as Fields, options, sending ?? {});
+    const send = () =>
+      Effect.flatMap(this.#respond(operation, (request ?? {}) as Fields, options, sending ?? {}), (response) =>
+        decode(operation, response),
+      );
     return Effect.suspend(send) as Effect.Effect<T, E>;
   }
 
-  #send(
+  /**
+   * Sends a request for operation, whose response is bytes, and returns its
+   * body as a Stream, read as it arrives rather than held in memory. A
+   * retry or a refresh after a 401 happens before the first byte; an error
+   * while reading fails the stream.
+   */
+  stream<E extends ClientError = ClientError>(
+    operation: Operation,
+    request: object | undefined,
+    options: RequestOptions | undefined,
+    sending?: SendOptions,
+  ): Stream.Stream<Uint8Array, E> {
+    const respond = Effect.suspend(() => this.#respond(operation, (request ?? {}) as Fields, options, sending ?? {}));
+    return Stream.unwrap(Effect.map(respond, (response) => response.stream)) as Stream.Stream<Uint8Array, E>;
+  }
+
+  // Sends the request, and returns its response when its status is a
+  // success, with the body unread.
+  #respond(
     operation: Operation,
     request: Fields,
     options: RequestOptions | undefined,
     sending: SendOptions,
-  ): Effect.Effect<unknown, ClientError> {
+  ): Effect.Effect<HttpClientResponse.HttpClientResponse, ClientError> {
     const headers = new Headers({ accept: operation.accept ?? 'application/json' });
     new Headers(this.#options.headers).forEach((value, key) => {
       headers.set(key, value);
@@ -306,7 +327,7 @@ export class EffectTransport {
       Effect.flatMap((response) =>
         response.status < 200 || response.status > 299
           ? Effect.flatMap(apiError(operation, response), Effect.fail)
-          : decode(operation, response),
+          : Effect.succeed(response),
       ),
     );
   }
@@ -397,6 +418,10 @@ class Unstubbed extends EffectTransport {
 
   override send<T, E extends ClientError = ClientError>(operation: Operation): Effect.Effect<T, E> {
     return Effect.die(new Error(`${operation.method} ${operation.route} isn't stubbed`));
+  }
+
+  override stream<E extends ClientError = ClientError>(operation: Operation): Stream.Stream<Uint8Array, E> {
+    return Stream.die(new Error(`${operation.method} ${operation.route} isn't stubbed`));
   }
 }
 

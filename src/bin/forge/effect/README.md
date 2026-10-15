@@ -50,6 +50,12 @@ type the document gives it is text (`text/*`, XML, JavaScript and the like),
 and as a `Uint8Array` otherwise, asked for with `Accept`. Errors are read as
 before.
 
+A method that returns bytes also gets a twin named with `Stream`, such as
+`getStream`, that returns the body as a `Stream<Uint8Array>`, read as it
+arrives rather than held in memory. A retry, or a refresh after a 401,
+happens before the first byte; `Stream.take` and interruption stop the
+download.
+
 A `date-time` is an Effect `DateTime.Utc`, to the millisecond, so an SDK
 needs no `Temporal`, which Node has only behind a flag and Workers doesn't
 have. A string without an offset, or that isn't a real date and time, stays

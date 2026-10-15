@@ -4,7 +4,9 @@
 //! Each group's effect.ts declares its Client, whose methods return an
 //! Effect, and bind, which sends the operations of its client.ts with an
 //! EffectTransport. A method with `x-fern-pagination` also gets a twin,
-//! named with `All`, that returns a Stream of every item of every page.
+//! named with `All`, that returns a Stream of every item of every page, and
+//! a method that returns bytes gets one named with `Stream`, that returns a
+//! Stream of the bytes as they arrive.
 //! The root's effect.ts is the entry point of the Effect SDK: it also
 //! declares Api, the client as an Effect service. The runtime of the Effect
 //! clients goes in `_/`, next to the TypeScript runtime.
@@ -14,7 +16,10 @@ use std::collections::{HashMap, HashSet};
 use forge::ts::{File as TsFile, Fragment, Ident, Module, PREAMBLE, frag, join, p};
 use forge::{Err, Forge, Group, Method, Model, Plugin, Type};
 
-use crate::ts::client::{Request, group_name, method_doc, method_name, operation_name, request_name, response_name};
+use crate::ts::client::{
+    Request, ResponseKind, group_name, method_doc, method_name, operation_name, request_name, response_kind,
+    response_name,
+};
 use crate::ts::types::{Prec, all_optional, doc, identifier, js_string, kept, key, typ};
 use crate::ts::{self, File, Node, RUNTIME_DIR};
 
@@ -182,20 +187,27 @@ fn effect(node: Node<'_>, name: Option<&str>, security: &Security) -> Result<TsF
     Ok(f)
 }
 
-/// Returns an error if the `All` twin of a method is named like another
-/// method or a group.
+/// Returns an error if the `All` or `Stream` twin of a method is named like
+/// another method or a group.
 fn check_names(entries: &[Entry<'_>], group_names: &HashMap<String, Group<'_>>) -> Result<(), Err> {
     let names: HashSet<String> = entries.iter().map(|e| method_name(e.method)).collect();
+    let taken = |name: &str| names.contains(name) || group_names.contains_key(name);
     for entry in entries {
-        if entry.pagination.is_some() {
-            let all = all_name(entry.method);
-            if names.contains(&all) || group_names.contains_key(&all) {
-                return Err(format!(
-                    "{}: its Stream of every item would be {all}, which is already taken",
-                    method_path(entry.method)
-                )
-                .into());
-            }
+        if entry.pagination.is_some() && taken(&all_name(entry.method)) {
+            return Err(format!(
+                "{}: its Stream of every item would be {}, which is already taken",
+                method_path(entry.method),
+                all_name(entry.method)
+            )
+            .into());
+        }
+        if streams(entry.method) && taken(&stream_name(entry.method)) {
+            return Err(format!(
+                "{}: its Stream of bytes would be {}, which is already taken",
+                method_path(entry.method),
+                stream_name(entry.method)
+            )
+            .into());
         }
     }
     Ok(())
@@ -278,6 +290,23 @@ fn client_interface(
                     ">;"
                 );
             }
+            if streams(m) {
+                let text = format!(
+                    "The bytes of `{name}`, as they arrive, rather than held in memory: for a large body, or to stop reading early."
+                );
+                f.doc(&doc(&text, m.is_deprecated()));
+                p!(
+                    f,
+                    key(&stream_name(m)),
+                    "(",
+                    params,
+                    "): ",
+                    EFFECT.ident("Stream").ty(),
+                    ".Stream<Uint8Array, ",
+                    error_ident(m),
+                    ">;"
+                );
+            }
         }
         for &sub in groups {
             let name = group_name(sub);
@@ -354,6 +383,17 @@ fn bind(f: &mut TsFile, entries: &[Entry<'_>], groups: &[Group<'_>], group_names
                         operation_ident(m),
                         ", ",
                         f.ident(pagination_name(m)),
+                        ", request, options",
+                        if entry.public { ", { auth: false }" } else { "" },
+                        "),"
+                    );
+                }
+                if streams(m) {
+                    p!(
+                        f,
+                        key(&stream_name(m)),
+                        ": (request, options) => transport.stream(",
+                        operation_ident(m),
                         ", request, options",
                         if entry.public { ", { auth: false }" } else { "" },
                         "),"
@@ -1135,6 +1175,16 @@ fn client_ident(g: Group<'_>) -> Ident {
 /// Returns the property of the `All` twin of `m`.
 fn all_name(m: Method<'_>) -> String {
     format!("{}All", method_name(m))
+}
+
+/// Reports whether `m` has a `Stream` twin: it returns bytes.
+fn streams(m: Method<'_>) -> bool {
+    response_kind(m) == ResponseKind::Bytes
+}
+
+/// Returns the property of the `Stream` twin of `m`.
+fn stream_name(m: Method<'_>) -> String {
+    format!("{}Stream", method_name(m))
 }
 
 /// Returns the name of how `m` pages.

@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { Effect } from 'effect';
+import { Effect, Stream } from 'effect';
 
 import { object } from '../src/codec.js';
-import { EffectTransport } from '../src/effect.js';
+import { ApiError, EffectTransport } from '../src/effect.js';
 import type { Operation } from '../src/index.js';
 import { json, mock } from './mock.js';
 
@@ -92,4 +92,54 @@ test('bytes and text responses are read as they are, asked for by their media ty
   // Text that looks like JSON is still text, with no envelope unwrapped.
   const text = send({ ...get, responseType: 'text', accept: 'text/plain' }, undefined, new Response('{"result":1}'));
   assert.equal(await Effect.runPromise(text.effect), '{"result":1}');
+});
+
+test('stream reads bytes as they arrive, and fails with an ApiError on an error status', async () => {
+  const get: Operation = {
+    method: 'GET',
+    route: '/objects/{key}',
+    response: null,
+    responseType: 'bytes',
+    accept: 'application/octet-stream',
+    errors: { '4XX': true },
+  };
+  const chunks = [new Uint8Array([1, 2]), new Uint8Array([3])];
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) {
+        controller.enqueue(chunk);
+      }
+      controller.close();
+    },
+  });
+  const { sent, client } = mock(new Response(body), json(404, { errors: [{ code: 10009, message: 'key not found' }] }));
+  const transport = new EffectTransport(client, { baseUrl: 'https://api.test/v1/' });
+
+  const read = await Effect.runPromise(Stream.runCollect(transport.stream(get, { key: 'a' }, undefined)));
+  assert.deepEqual(
+    read.flatMap((chunk) => [...chunk]),
+    [1, 2, 3],
+  );
+  assert.equal(sent[0]!.url, 'https://api.test/v1/objects/a');
+  assert.equal(sent[0]!.headers['accept'], 'application/octet-stream');
+
+  const missing = await Effect.runPromise(
+    Effect.flip(Stream.runCollect(transport.stream(get, { key: 'b' }, undefined))),
+  );
+  assert.ok(missing instanceof ApiError);
+  assert.equal(missing.status, 404);
+  assert.equal(missing.message, 'key not found');
+});
+
+test('nothing is sent until the stream is read', async () => {
+  const { sent, client } = mock(new Response(new Uint8Array([1])));
+  const transport = new EffectTransport(client, { baseUrl: 'https://api.test/v1/' });
+  const stream = transport.stream(
+    { method: 'GET', route: '/a', response: null, responseType: 'bytes' },
+    undefined,
+    undefined,
+  );
+  assert.equal(sent.length, 0);
+  await Effect.runPromise(Stream.runDrain(stream));
+  assert.equal(sent.length, 1);
 });

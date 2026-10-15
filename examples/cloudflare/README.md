@@ -183,6 +183,78 @@ has the new column (`pnpm migrate --fail --name tenant`):
 A restore also undoes any other write made since the bookmark, so this is
 for when the tenants aren't being written to, such as a maintenance window.
 
+### A Worker preview
+
+`src/worker.ts` deploys a whole preview: a KV namespace and a D1 database,
+made at once and seeded, then a Worker uploaded as a module, with both
+bound to it, and live on its workers.dev URL. Each piece is a scoped
+resource, so the Worker is deleted first, then the rest, however the
+program ends:
+
+```ts
+yield *
+  resource(
+    `Worker ${name}`,
+    api.workers.legacy.scripts.update({
+      accountId,
+      scriptName: name,
+      metadata: {
+        mainModule: 'worker.js',
+        compatibilityDate: '2026-10-01',
+        bindings: [
+          { type: 'kv_namespace', name: 'KV', namespaceId: namespace.id },
+          { type: 'd1', name: 'DB', id: databaseId, databaseId },
+        ],
+      },
+      files: [new File([code], 'worker.js', { type: 'application/javascript+module' })],
+    }),
+    () => api.workers.legacy.scripts.delete({ accountId, scriptName: name }),
+  );
+```
+
+The upload is multipart: the metadata goes as a JSON part, its fields
+renamed to Cloudflare's (`main_module`, `namespace_id`), and the module as
+a file. The Worker reads its greeting from KV and counts visits in D1, and
+`pnpm worker` calls it three times, decoding each answer with a Schema,
+before it deletes everything. A new workers.dev URL answers with a
+challenge page or an error for a few seconds, so it waits on the Worker's
+`/health` first, and sends a call again after a challenge, which never
+reached the Worker. Against the live API (`pnpm worker --name pr-7`):
+
+```
+ 0.00s  deploying pr-7: KV namespace, D1 database, Worker
+ 1.01s  ✓ created KV namespace pr-7
+ 1.07s  ✓ created D1 database pr-7
+ 1.56s  ✓ seeded KV and D1
+ 3.30s  ✓ created Worker pr-7
+ 5.21s  ✓ enabled pr-7.<account>.workers.dev
+ 5.21s  waiting for it to answer
+ 9.17s  ✓ live: {"greeting":"hello from pr-7","visits":1}
+10.73s  ✓ live: {"greeting":"hello from pr-7","visits":2}
+12.32s  ✓ live: {"greeting":"hello from pr-7","visits":3}
+12.91s  ✓ deleted Worker pr-7
+13.57s  ✓ deleted D1 database pr-7
+13.89s  ✓ deleted KV namespace pr-7
+
+nothing left behind
+```
+
+With `--fail`, the Worker has a syntax error:
+
+```
+ 0.00s  deploying preview-mv9u1oj1: KV namespace, D1 database, Worker
+ 0.41s  ✓ created KV namespace preview-mv9u1oj1
+ 0.67s  ✓ created D1 database preview-mv9u1oj1
+ 1.10s  ✓ seeded KV and D1
+ 1.10s  + the Worker has a syntax error, on purpose
+ 1.49s  ✗ couldn't create Worker preview-mv9u1oj1
+ 2.04s  ✓ deleted D1 database preview-mv9u1oj1
+ 2.16s  ✓ deleted KV namespace preview-mv9u1oj1
+
+failed: Uncaught SyntaxError
+nothing left behind
+```
+
 ### Testing
 
 App code depends on `Api`, not on `fetch`, so a test provides a fake one.
@@ -214,7 +286,10 @@ program.pipe(Effect.provide(Fake));
 - **Uploads and downloads** are typed too. A multipart body's fields sit
   next to the parameters, with files as `Blob`, `File`, `Uint8Array` or a
   string, and objects sent as JSON parts; bytes come back as a `Uint8Array`,
-  and text as a string.
+  and text as a string. Each method that returns bytes has a `Stream` twin,
+  such as `api.kv.keys.getStream`, that reads them as they arrive, so a
+  large value isn't held in memory, and `Stream.take` stops the download
+  early.
 
   ```ts
   Effect.gen(function* () {
@@ -244,7 +319,7 @@ pnpm generate     # downloads Cloudflare's document and writes sdk/
 pnpm test         # runs the examples against a fake Cloudflare
 ```
 
-Two programs talk to a real account. Keep the token in your environment,
+These programs talk to a real account. Keep the token in your environment,
 never in a file here.
 
 ```sh
@@ -266,7 +341,16 @@ CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... pnpm preview [--fail]
 # them. With --fail, one tenant has drifted, so every migrated tenant is
 # restored. Needs D1 Edit.
 CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... pnpm migrate [--fail]
+
+# Deploys a Worker with a KV namespace and a D1 database bound to it, calls
+# it on workers.dev, and deletes it all. With --fail, the Worker doesn't
+# parse, and the rest is deleted. Needs Workers Scripts Edit, Workers KV
+# Storage Edit and D1 Edit.
+CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... pnpm worker [--fail]
 ```
+
+Behind an HTTP proxy, set `NODE_USE_ENV_PROXY=1`, as Node's `fetch` doesn't
+read `HTTPS_PROXY` otherwise.
 
 For a throwaway account to run these in, Wrangler's `--temporary` flag makes
 one that lasts an hour, with no sign-up.
@@ -293,8 +377,8 @@ one that lasts an hour, with no sign-up.
   describes a single result without that wrapper, so the hook unwraps a result
   that isn't an array, keeping the envelope's `result_info` beside an object
   result. Lists keep their envelope, as the document describes them.
-- `src/report.ts`, `src/tour.ts`, `src/preview.ts` and `src/migrate.ts` are
-  the programs, and `test/` runs them against fakes made with `Api.layerTest`.
+- `src/report.ts`, `src/tour.ts`, `src/preview.ts`, `src/migrate.ts` and
+  `src/worker.ts` are the programs, and `test/` runs them against fakes made with `Api.layerTest`.
 
 ## Limits
 

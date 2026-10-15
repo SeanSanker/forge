@@ -286,6 +286,29 @@ fn ts_sends_and_reads_what_is_not_json() {
     std::fs::remove_dir_all(&out).unwrap();
 }
 
+#[test]
+fn effect_streams_bytes() {
+    let out = std::env::temp_dir().join(format!("forge-cli-effect-stream-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&out);
+    let result = forge(&["-", "--target", "effect", "--out", out.to_str().unwrap()], NOT_JSON);
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    // A method that returns bytes has a Stream twin; one that returns text
+    // doesn't.
+    let objects = std::fs::read_to_string(out.join("objects/effect.ts")).unwrap();
+    assert!(
+        objects
+            .contains("getStream(request: GetRequest, options?: RequestOptions): Stream.Stream<Uint8Array, GetError>;"),
+        "{objects}"
+    );
+    assert!(
+        objects.contains("getStream: (request, options) => transport.stream(GetOperation, request, options),"),
+        "{objects}"
+    );
+    let scripts = std::fs::read_to_string(out.join("scripts/effect.ts")).unwrap();
+    assert!(!scripts.contains("Stream"), "{scripts}");
+    std::fs::remove_dir_all(&out).unwrap();
+}
+
 /// A document whose methods page by offset, with a page size, and by
 /// cursor, with a required parameter, and where the method `zones.settings`
 /// shares its name with a group.

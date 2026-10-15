@@ -10,6 +10,7 @@
     "tour": "node --import ./scripts/register.ts src/live.ts",
     "preview": "node --import ./scripts/register.ts src/preview-main.ts",
     "migrate": "node --import ./scripts/register.ts src/migrate-main.ts",
+    "worker": "node --import ./scripts/register.ts src/worker-main.ts",
     "test": "node --import ./scripts/register.ts --test \"test/**/*.test.ts\"",
     "typecheck": "tsc -p tsconfig.json"
   },
