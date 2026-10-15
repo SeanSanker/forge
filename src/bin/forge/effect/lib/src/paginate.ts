@@ -12,7 +12,9 @@
  *   it's a page number, from 1. With `step`, the request field holding the
  *   page size, it's the index of the page's first item, from 0. The last
  *   page has `hasNextPage` false when the response has it, and is otherwise
- *   empty, or shorter than the page size.
+ *   empty, or shorter than the page size. A page with the same items as the
+ *   one before also ends the stream, without them, as an API that ignores
+ *   the request field would return it forever.
  * - `uri` and `path`: the response has a link to the next page at `next`: a
  *   URL, which may be relative to the base URL, or a path that follows the
  *   base URL. The last page has none. Links are followed only on the base
@@ -126,17 +128,28 @@ export function paginate<I, E extends ClientError = ClientError>(
 
   const { offset, step, hasNextPage } = pagination;
   const size = step === undefined ? undefined : fields[step];
-  const first = fields[offset] ?? (step === undefined ? 1 : 0);
-  return Stream.paginate(first as number, (at: number) =>
+  const first = (fields[offset] ?? (step === undefined ? 1 : 0)) as number;
+  return Stream.paginate({ at: first, last: undefined as string | undefined }, ({ at, last }) =>
     Effect.map(fetch(offset, at), (response) => {
       const page = items(response, pagination) as readonly I[];
+      // A page the same as the one before means the API ignores the
+      // request field, and would return it forever.
+      const seen = page.length > 0 ? fingerprint(page) : undefined;
+      if (seen !== undefined && seen === last) {
+        return [[] as readonly I[], Option.none()] as const;
+      }
       const more =
         page.length > 0 &&
         (hasNextPage !== undefined
           ? get(response, hasNextPage) === true
           : typeof size !== 'number' || page.length >= size);
       const next = step === undefined ? at + 1 : at + (typeof size === 'number' ? size : page.length);
-      return [page, more ? Option.some(next) : Option.none()] as const;
+      return [page, more ? Option.some({ at: next, last: seen }) : Option.none()] as const;
     }),
   );
+}
+
+// Returns a string that is the same for pages with the same items.
+function fingerprint(page: readonly unknown[]): string {
+  return JSON.stringify(page, (_, value: unknown) => (typeof value === 'bigint' ? `${value}n` : value));
 }

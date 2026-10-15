@@ -144,6 +144,16 @@ test('a failed page fails the stream, after the items before it', async () => {
   assert.equal(error._tag, 'ApiError');
 });
 
+test('offset: an API that ignores the page number ends the stream instead of repeating it', async () => {
+  const { sent, client } = mockWith(() => json(200, { data: things(1, 2) }));
+  const items = await all<{ id: number }>(client, { kind: 'offset', offset: 'page', results: ['data'] });
+  assert.deepEqual(
+    items.map((t) => t.id),
+    [1, 2],
+  );
+  assert.equal(sent.length, 2);
+});
+
 test('uri: follows the next link, absolute or relative, until there is none', async () => {
   const pages = [
     { data: things(1, 2), next: 'https://api.test/things?after=2' },
