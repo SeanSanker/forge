@@ -1,8 +1,8 @@
 //! The TypeScript SDK generator, ported from Go's `internal/ts` and
 //! following the specs in specs/ts.
 //!
-//! Every group gets a client.ts, a models.ts and an index.ts in its
-//! directory. The root also gets the runtime library, in `_/`.
+//! Every group gets a client.ts, a models.ts, an inputs.ts and an index.ts
+//! in its directory. The root also gets the runtime library, in `_/`.
 
 use std::borrow::Cow;
 
@@ -12,6 +12,7 @@ use forge::{Err, Forge, Group, Method, Model, Plugin};
 pub(crate) mod client;
 mod codec;
 mod index;
+mod inputs;
 mod models;
 mod operation;
 pub(crate) mod types;
@@ -37,13 +38,15 @@ impl Plugin for Generator {
     }
 }
 
-/// Returns the client.ts, models.ts and index.ts of `node`. A node without
-/// models has an empty models.ts, which isn't written.
+/// Returns the client.ts, models.ts, inputs.ts and index.ts of `node`. A
+/// node without models, or input types, has an empty models.ts, or
+/// inputs.ts, which isn't written.
 fn files(node: Node<'_>) -> Result<Vec<File>, Err> {
     let models = models::models(node).map_err(|errs| errs.join("\n"))?;
     Ok(vec![
         File::Ts(client::client(node)),
         File::Ts(models),
+        File::Ts(inputs::inputs(node)),
         File::Ts(index::index(node)),
     ])
 }

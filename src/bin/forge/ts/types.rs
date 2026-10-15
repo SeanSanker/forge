@@ -14,17 +14,38 @@ pub(crate) enum Prec {
     Array,
 }
 
+/// Which way a value of a type goes: from the API, or to it in a request,
+/// where a client leaves out the fields the document marks read-only.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Side {
+    Read,
+    Write,
+}
+
 /// Returns `t` as part of a line.
 ///
 /// ```text
 /// p!(f, "export type ", m, " = ", typ(m.ty(), Prec::Top), ";");
 /// ```
 pub(crate) fn typ(t: Type<'_>, prec: Prec) -> Fragment {
+    side_typ(t, prec, Side::Read)
+}
+
+/// Returns `t` as a request has it: without the fields the document marks
+/// read-only, and with the input type of a model that has any
+/// ([`super::inputs`]).
+pub(crate) fn input_typ(t: Type<'_>, prec: Prec) -> Fragment {
+    side_typ(t, prec, Side::Write)
+}
+
+fn side_typ(t: Type<'_>, prec: Prec, side: Side) -> Fragment {
+    let typ = |t, prec| side_typ(t, prec, side);
     match t {
         Type::Scalar(scalar) => scalar_type(scalar),
+        Type::Model(m) if side == Side::Write && needs_input(m) => frag!(input_ident(m).ty()),
         Type::Model(m) => frag!(Ident::model(m).ty()),
         Type::Array(array) => frag!(typ(array.elem(), Prec::Array), "[]"),
-        Type::Object(object) => object_type(object),
+        Type::Object(object) => object_type(object, side),
         Type::Enum(e) => {
             let values = join(" | ", e.values().map(literal));
             if e.values().len() > 1 && prec > Prec::Top {
@@ -34,7 +55,7 @@ pub(crate) fn typ(t: Type<'_>, prec: Prec) -> Fragment {
             }
         }
         Type::Union(union) => {
-            let members = alternatives(union.members());
+            let members = side_alternatives(union.members(), side);
             if prec > Prec::Top {
                 frag!("(", members, ")")
             } else {
@@ -74,17 +95,17 @@ fn scalar_type(scalar: Scalar) -> Fragment {
 
 /// Returns an object type: its fields, and an index signature when it
 /// allows other keys, or a map when it keeps no field.
-fn object_type(object: Object<'_>) -> Fragment {
+fn object_type(object: Object<'_>, side: Side) -> Fragment {
     if !has_fields(Type::Object(object)) {
-        return frag!("{ [key: string]: ", typ(elem(object), Prec::Top), " }");
+        return frag!("{ [key: string]: ", side_typ(elem(object), Prec::Top, side), " }");
     }
     let mut open = object.extra().is_some();
     let mut members = Vec::new();
     for field in fields(object) {
-        if kept(field) {
-            members.push(member(field));
-        } else {
+        if !kept(field) {
             open = true;
+        } else if side == Side::Read || !field.is_read_only() {
+            members.push(member(field, side));
         }
     }
     let mut out = frag!("{ ", join("; ", members));
@@ -98,22 +119,58 @@ fn object_type(object: Object<'_>) -> Fragment {
 /// Returns `types` joined by ` | `. A union among them, which has a
 /// discriminator, and an enum need no parentheses.
 pub(super) fn alternatives<'f>(types: impl IntoIterator<Item = Type<'f>>) -> Fragment {
+    side_alternatives(types, Side::Read)
+}
+
+fn side_alternatives<'f>(types: impl IntoIterator<Item = Type<'f>>, side: Side) -> Fragment {
     join(
         " | ",
         types.into_iter().map(|t| match t {
-            Type::Union(_) | Type::Enum(_) => typ(t, Prec::Top),
-            _ => typ(t, Prec::Intersection),
+            Type::Union(_) | Type::Enum(_) => side_typ(t, Prec::Top, side),
+            _ => side_typ(t, Prec::Intersection, side),
         }),
     )
 }
 
 /// Returns a property of an object type, without the `;` after it.
-pub(super) fn member(field: Field<'_>) -> Fragment {
+pub(super) fn member(field: Field<'_>, side: Side) -> Fragment {
     frag!(
         key(&field.name().camel()),
         if field.is_required() { ": " } else { "?: " },
-        typ(field.ty(), Prec::Top)
+        side_typ(field.ty(), Prec::Top, side)
     )
+}
+
+/// Reports whether a request's form of `m` differs from `m`: some object
+/// in it, directly or through other models, arrays, maps and compositions,
+/// has a field the document marks read-only.
+pub(crate) fn needs_input(m: Model<'_>) -> bool {
+    fn walk<'f>(t: Type<'f>, seen: &mut HashSet<Model<'f>>) -> bool {
+        match t {
+            Type::Model(m) => seen.insert(m) && walk(m.ty(), seen),
+            Type::Array(array) => walk(array.elem(), seen),
+            Type::Object(object) => {
+                object
+                    .fields()
+                    .any(|f| kept(f) && (f.is_read_only() || walk(f.ty(), seen)))
+                    || object.extra().is_some_and(|extra| walk(extra, seen))
+            }
+            Type::Union(union) => union.members().any(|m| walk(m, seen)),
+            Type::Intersection(intersection) => intersection.members().any(|m| walk(m, seen)),
+            Type::Scalar(_) | Type::Enum(_) => false,
+        }
+    }
+    walk(m.ty(), &mut HashSet::new())
+}
+
+/// Returns the identifier of the input type of `m`, which a request has in
+/// place of `m` when [`needs_input`] reports it: its name with `Input`
+/// after it, declared in the `inputs.ts` next to its `models.ts`, so it
+/// can't clash with a model.
+pub(crate) fn input_ident(m: Model<'_>) -> Ident {
+    let model = Ident::model(m);
+    let dir = m.group().map_or(forge::ts::Module::ROOT, forge::ts::Module::group);
+    dir.sub("inputs.ts").ident(format!("{}Input", model.name))
 }
 
 /// Returns the documentation of a declaration, with `@deprecated` after it
@@ -172,7 +229,8 @@ pub(super) fn object_like<'f>(t: Type<'f>, seen: &mut HashSet<Model<'f>>) -> boo
 pub(crate) fn all_optional(t: Type<'_>) -> bool {
     fn walk<'f>(t: Type<'f>, seen: &mut HashSet<Model<'f>>) -> bool {
         match t {
-            Type::Object(object) => !object.fields().any(|f| kept(f) && f.is_required()),
+            // A request leaves out a read-only field, even a required one.
+            Type::Object(object) => !object.fields().any(|f| kept(f) && f.is_required() && !f.is_read_only()),
             Type::Scalar(Scalar::Unknown) => true,
             Type::Model(m) => seen.insert(m) && walk(m.ty(), seen),
             Type::Intersection(intersection) => intersection.members().all(|m| walk(m, seen)),

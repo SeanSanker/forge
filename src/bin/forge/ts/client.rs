@@ -10,7 +10,8 @@ use forge::{Field, Group, Location, Method, Model, Type};
 use super::models::print_fields;
 use super::operation::operation;
 use super::types::{
-    Prec, all_optional, alternatives, doc, has_fields, identifier, js_string, key, object_like, typ, valid_name,
+    Prec, Side, all_optional, alternatives, doc, has_fields, identifier, input_typ, js_string, kept, key, object_like,
+    typ, valid_name,
 };
 use super::{Node, request_options, runtime};
 
@@ -279,15 +280,24 @@ fn request_type(f: &mut File, m: Method<'_>, request: &Request<'_>) {
         && !has_fields(body.ty)
     {
         if params.is_empty() {
-            p!(f, "export type ", name, " = ", typ(body.ty, Prec::Top), ";");
+            p!(f, "export type ", name, " = ", input_typ(body.ty, Prec::Top), ";");
             return;
         }
         p!(f, "export type ", name, " = {");
         print_params(f, params);
-        p!(f, "} & ", typ(body.ty, Prec::Intersection), ";");
+        p!(f, "} & ", input_typ(body.ty, Prec::Intersection), ";");
         return;
     }
-    if params.is_empty() && request.body.is_none() {
+    // A flat body whose fields are all read-only sends nothing of its own.
+    let empty_body = match &request.body {
+        None => true,
+        Some(body) => {
+            request.flat
+                && matches!(body.ty, Type::Object(object)
+                    if object.extra().is_none() && object.fields().all(|f| kept(f) && f.is_read_only()))
+        }
+    };
+    if params.is_empty() && empty_body {
         p!(f, "export interface ", name, " {}");
         return;
     }
@@ -295,14 +305,14 @@ fn request_type(f: &mut File, m: Method<'_>, request: &Request<'_>) {
     print_params(f, params);
     if let Some(body) = &request.body {
         match body.ty {
-            Type::Object(object) if request.flat => print_fields(f, object),
+            Type::Object(object) if request.flat => print_fields(f, object, Side::Write),
             ty => f.indent(|f| {
                 f.doc(body.description);
                 p!(
                     f,
                     "body",
                     if body.required { ": " } else { "?: " },
-                    typ(ty, Prec::Top),
+                    input_typ(ty, Prec::Top),
                     ";"
                 );
             }),
@@ -322,7 +332,7 @@ fn response_type(f: &mut File, m: Method<'_>) {
         [] => p!(f, "export type ", name, " = void;"),
         [Type::Object(object)] if !optional && has_fields(types[0]) => {
             p!(f, "export interface ", name, " {");
-            print_fields(f, object);
+            print_fields(f, object, Side::Read);
             p!(f, "}");
         }
         _ if optional => p!(f, "export type ", name, " = ", alternatives(types), " | undefined;"),
@@ -454,7 +464,7 @@ fn print_params(f: &mut File, params: &[Param<'_>]) {
                 f,
                 key(&param.name),
                 if field.is_required() { ": " } else { "?: " },
-                typ(field.ty(), Prec::Top),
+                input_typ(field.ty(), Prec::Top),
                 ";"
             );
         }

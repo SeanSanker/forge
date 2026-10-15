@@ -111,6 +111,76 @@ fn ts_query_parameter_named_by_extension() {
     std::fs::remove_dir_all(&out).unwrap();
 }
 
+/// A document whose `things.create` sends a Thing, whose `id` and
+/// `created_at` are read-only, and whose `owner` has a read-only `id` too.
+/// `things.list` returns Reports, which no request holds.
+const READ_ONLY: &str = r##"{
+  "openapi": "3.0.3", "info": {"title": "t", "version": "1"},
+  "paths": {"/things": {
+    "post": {"x-fern-sdk-group-name": "things", "x-fern-sdk-method-name": "create",
+      "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Thing"}}}},
+      "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Thing"}}}}}},
+    "get": {"x-fern-sdk-group-name": "things", "x-fern-sdk-method-name": "list",
+      "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {
+        "type": "array", "items": {"$ref": "#/components/schemas/Report"}}}}}}}},
+    "/stamps": {"post": {"x-fern-sdk-group-name": "stamps", "x-fern-sdk-method-name": "create",
+      "requestBody": {"required": true, "content": {"application/json": {"schema": {
+        "type": "object", "required": ["id"], "properties": {"id": {"type": "string", "readOnly": true}}}}}},
+      "responses": {"204": {"description": "ok"}}}}},
+  "components": {"schemas": {
+    "Thing": {"type": "object", "required": ["id", "name"], "properties": {
+      "id": {"type": "string", "readOnly": true},
+      "name": {"type": "string"},
+      "created_at": {"type": "string", "format": "date-time", "readOnly": true},
+      "owner": {"$ref": "#/components/schemas/Owner"},
+      "tags": {"type": "array", "items": {"$ref": "#/components/schemas/Tag"}}}},
+    "Owner": {"type": "object", "properties": {"id": {"type": "string", "readOnly": true}, "email": {"type": "string"}}},
+    "Tag": {"type": "object", "properties": {"label": {"type": "string"}}},
+    "Report": {"type": "object", "properties": {"id": {"type": "string", "readOnly": true}}}}}
+}"##;
+
+#[test]
+fn ts_requests_leave_out_read_only_fields() {
+    let out = std::env::temp_dir().join(format!("forge-cli-ts-read-only-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&out);
+    let result = forge(&["-", "--target", "ts", "--out", out.to_str().unwrap()], READ_ONLY);
+    assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+    let read = |name: &str| std::fs::read_to_string(out.join(name)).unwrap();
+
+    // The request has the input type, which leaves out read-only fields and
+    // holds the input types of the models in it; a model with no read-only
+    // field is itself.
+    let client = read("things/client.ts");
+    assert!(client.contains("export type CreateRequest = ThingInput;"), "{client}");
+    assert!(client.contains("export type CreateResponse = Thing;"), "{client}");
+    let inputs = read("things/inputs.ts");
+    assert!(
+        inputs.contains("export interface ThingInput {\n  name: string;\n  owner?: OwnerInput;\n  tags?: Tag[];\n}"),
+        "{inputs}"
+    );
+    assert!(
+        inputs.contains("export interface OwnerInput {\n  email?: string;\n}"),
+        "{inputs}"
+    );
+    // A model that only responses hold has no input type.
+    assert!(!inputs.contains("ReportInput"), "{inputs}");
+    // The models keep every field.
+    let models = read("things/models.ts");
+    assert!(models.contains("  id: string;"), "{models}");
+    let index = read("things/index.ts");
+    assert!(
+        index.contains("  OwnerInput,\n  ThingInput,\n} from \"./inputs.js\";"),
+        "{index}"
+    );
+
+    // A request whose only required field is read-only can be left out.
+    let stamps = read("stamps/client.ts");
+    assert!(stamps.contains("create(request?: CreateRequest"), "{stamps}");
+    assert!(stamps.contains("export interface CreateRequest {}"), "{stamps}");
+    assert!(!out.join("stamps/inputs.ts").exists());
+    std::fs::remove_dir_all(&out).unwrap();
+}
+
 /// A document whose methods page by offset, with a page size, and by
 /// cursor, with a required parameter, and where the method `zones.settings`
 /// shares its name with a group.

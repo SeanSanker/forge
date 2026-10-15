@@ -28,6 +28,11 @@ Each method returns `Effect<Response, GetError>`, where its error is a
 response types, codecs and operations are the `ts` target's own, so both
 clients encode and decode alike.
 
+A request leaves out the fields the document marks `readOnly`, which the
+server sets, such as an `id`: a model with such a field, directly or in a
+model it holds, has an input type for requests, such as `ThingInput` for
+`Thing`, in its group's `inputs.ts`. Responses have the model itself.
+
 A `date-time` is an Effect `DateTime.Utc`, to the millisecond, so an SDK
 needs no `Temporal`, which Node has only behind a flag and Workers doesn't
 have. A string without an offset, or that isn't a real date and time, stays

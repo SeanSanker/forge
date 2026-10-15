@@ -6,11 +6,14 @@ use forge::ts::{File, Ident, p};
 
 use super::Node;
 use super::client::{request_name, response_name, skipped};
+use super::inputs::input_models;
+use super::types::input_ident;
 
 /// Returns the index.ts of `node`: ApiError and RequestOptions from the
 /// runtime library, so that every entry point is complete, then
-/// createClient and the types of its client, then its models. A model named
-/// like another export is exported with a `$` added.
+/// createClient and the types of its client, then its models and their
+/// input types. A model or input type named like another export is
+/// exported with a `$` added.
 pub(super) fn index(node: Node<'_>) -> File {
     let mut f = File::new(node.dir().sub("index.ts"));
     let depth = node.depth();
@@ -33,22 +36,34 @@ pub(super) fn index(node: Node<'_>) -> File {
 
     let mut taken: HashSet<String> = ["ApiError", "RequestOptions"].map(String::from).into();
     taken.extend(names);
-    let mut models = Vec::new();
-    for m in node.models() {
-        let name = Ident::model(m).name.into_owned();
+    let models: Vec<Ident> = node.models().into_iter().map(Ident::model).collect();
+    let models = exported(&models, &mut taken);
+    export(&mut f, "export type", &models, "./models.js");
+    let inputs: Vec<Ident> = input_models(node).into_iter().map(input_ident).collect();
+    let inputs = exported(&inputs, &mut taken);
+    export(&mut f, "export type", &inputs, "./inputs.js");
+    f
+}
+
+/// Returns the names to export `idents` under, as `Name` or `Name as
+/// Name$`, each with `$` added until it is not in `taken`, and adds them to
+/// it.
+fn exported(idents: &[Ident], taken: &mut HashSet<String>) -> Vec<String> {
+    let mut names = Vec::new();
+    for ident in idents {
+        let name = ident.name.clone().into_owned();
         let mut alias = name.clone();
         while taken.contains(&alias) {
             alias.push('$');
         }
         taken.insert(alias.clone());
-        models.push(if alias == name {
+        names.push(if alias == name {
             name
         } else {
             format!("{name} as {alias}")
         });
     }
-    export(&mut f, "export type", &models, "./models.js");
-    f
+    names
 }
 
 /// Prints an export of `names` from the module at `spec`, with each name on

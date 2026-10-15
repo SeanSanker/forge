@@ -208,6 +208,9 @@ program.pipe(Effect.provide(Fake));
   is redacted from logs and traces.
 - **Each request is a span** named after its route, such as
   `GET /zones/{zoneId}/dns_records`.
+- **Requests leave out read-only fields**, such as a Worker's `id` and
+  `created_on`: 233 models have an input type for requests, such as
+  `WorkersWorkerInput`, and responses keep the full model.
 - **The Promise client is still there.** The Effect client is generated next
   to it, from the same types and codecs.
 
@@ -288,9 +291,6 @@ one that lasts an hour, with no sign-up.
   `Temporal` polyfill is needed. `JSON.stringify` writes one as its ISO
   string, but `structuredClone` copies it as a plain object, so in a Worker,
   store dates in Durable Object storage as strings (`DateTime.formatIso`).
-- Request types include fields the document marks read-only, as forge's
-  TypeScript target does
-  ([cloudflare/forge#43](https://github.com/cloudflare/forge/issues/43)).
 - Query parameters with `.` or `~` in their names, such as `account.id` on
   `GET /zones`, are typed (`accountId`), as `scripts/names.ts` names them.
   The one templated name, `meta.<field>[<operator>]`, isn't; pass it in the

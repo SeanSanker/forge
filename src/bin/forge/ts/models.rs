@@ -7,7 +7,7 @@ use forge::{Model, Object, Type};
 
 use super::Node;
 use super::codec::{declares_codec, model_codec};
-use super::types::{Prec, doc, fields, has_fields, kept, member, typ};
+use super::types::{Prec, Side, doc, fields, has_fields, kept, member, typ};
 
 /// Returns the models.ts of `node`: each model, then the codecs of the
 /// models. It reports a model whose name has no letters or digits, and two
@@ -65,7 +65,7 @@ fn model(f: &mut File, m: Model<'_>) {
     match ty {
         Type::Object(object) if has_fields(ty) => {
             p!(f, "export interface ", m, " {");
-            print_fields(f, object);
+            print_fields(f, object, Side::Read);
             p!(f, "}");
         }
         _ => p!(f, "export type ", m, " = ", typ(ty, Prec::Top), ";"),
@@ -73,8 +73,9 @@ fn model(f: &mut File, m: Model<'_>) {
 }
 
 /// Prints the fields of `object`, each on a line of its own after its
-/// documentation, and an index signature when it allows other keys.
-pub(super) fn print_fields(f: &mut File, object: Object<'_>) {
+/// documentation, and an index signature when it allows other keys. A
+/// request's side leaves out the fields the document marks read-only.
+pub(super) fn print_fields(f: &mut File, object: Object<'_>, side: Side) {
     let mut open = object.extra().is_some();
     f.indent(|f| {
         for field in fields(object) {
@@ -82,8 +83,11 @@ pub(super) fn print_fields(f: &mut File, object: Object<'_>) {
                 open = true;
                 continue;
             }
+            if side == Side::Write && field.is_read_only() {
+                continue;
+            }
             f.doc(&doc(field.description(), field.is_deprecated()));
-            p!(f, member(field), ";");
+            p!(f, member(field, side), ";");
         }
         if open {
             p!(f, "[key: string]: unknown;");
