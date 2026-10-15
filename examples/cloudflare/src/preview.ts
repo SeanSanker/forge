@@ -36,22 +36,25 @@ export const previewStack = (name: string, options: { readonly failing?: boolean
         (a) => remove(a).pipe(Effect.retry({ times: 3 }), Effect.andThen(log(`✓ deleted ${label}`)), Effect.orDie),
       );
 
-    yield* log(`creating a KV namespace, a D1 database and a queue named ${name}, at once`);
+    yield* log(`creating ${name}: KV namespace, D1 database, queue`);
+    if (options.failing) {
+      yield* log('+ queue "Not Valid!", which fails on purpose');
+    }
     const stack = yield* Effect.all(
       {
-        namespace: resource('KV namespace', api.kv.namespaces.create({ accountId, title: name }), (ns) =>
+        namespace: resource(`KV namespace ${name}`, api.kv.namespaces.create({ accountId, title: name }), (ns) =>
           api.kv.namespaces.delete({ accountId, namespaceId: ns.id }),
         ),
-        database: resource('D1 database', api.d1.create({ accountId, name }), (db) =>
+        database: resource(`D1 database ${name}`, api.d1.create({ accountId, name }), (db) =>
           api.d1.delete({ accountId, databaseId: db.uuid! }),
         ),
-        queue: resource('queue', api.queues.create({ accountId, queueName: name }), (queue) =>
+        queue: resource(`queue ${name}`, api.queues.create({ accountId, queueName: name }), (queue) =>
           api.queues.delete({ accountId, queueId: queue.queueId! }),
         ),
         // A name Cloudflare rejects, so this create fails while the others
         // are still in flight.
         rejected: options.failing
-          ? resource('a queue named "Not Valid!"', api.queues.create({ accountId, queueName: 'Not Valid!' }), (queue) =>
+          ? resource('queue "Not Valid!"', api.queues.create({ accountId, queueName: 'Not Valid!' }), (queue) =>
               api.queues.delete({ accountId, queueId: queue.queueId! }),
             )
           : Effect.void,

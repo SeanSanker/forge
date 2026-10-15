@@ -17,7 +17,10 @@ import { Account } from './tour.js';
 // The account is CLOUDFLARE_ACCOUNT_ID, or else the token's first account.
 
 const drifted = process.argv.includes('--fail');
-const prefix = `tenant-${Date.now().toString(36)}`;
+// --name tenant names the databases tenant-01 to tenant-08; a prefix unique
+// to the run by default.
+const named = process.argv.indexOf('--name');
+const prefix = named === -1 ? `tenant-${Date.now().toString(36)}` : process.argv[named + 1]!;
 const migration = 'ALTER TABLE users ADD COLUMN email TEXT';
 
 const demo = Effect.scoped(
@@ -28,7 +31,7 @@ const demo = Effect.scoped(
 
     // The fleet, deleted when the demo ends, however it ends.
     const names = Array.from({ length: 8 }, (_, i) => `${prefix}-${String(i + 1).padStart(2, '0')}`);
-    yield* log(`making 8 tenant databases${drifted ? `; ${names[5]} already has an email column` : ''}`);
+    yield* log(`making 8 tenants${drifted ? `; ${names[5]} already has the column` : ''}`);
     const fleet = yield* Effect.forEach(
       names,
       (name, i) =>
@@ -50,7 +53,7 @@ const demo = Effect.scoped(
         ),
       { concurrency: 'unbounded' },
     );
-    yield* log('✓ made 8 tenant databases');
+    yield* log('✓ made 8 tenants');
 
     // Every tenant, found a page at a time, migrated all or none.
     const result = yield* Effect.result(
@@ -74,8 +77,8 @@ const demo = Effect.scoped(
     const count = withEmail.filter(Boolean).length;
     yield* log(
       result._tag === 'Success'
-        ? `${count} of 8 tenants have users.email`
-        : `${count} of 8 tenants have users.email: only the one that already had it`,
+        ? `${count} of 8 have the column`
+        : `${count} of 8 have the column: ${names[5]}, which already had it`,
     );
   }),
 );
@@ -83,7 +86,7 @@ const demo = Effect.scoped(
 const ApiLive = Api.layerConfig({ retry: true }).pipe(Layer.provide(FetchHttpClient.layer));
 
 const program = demo.pipe(
-  Effect.andThen(Console.log('\nthe fleet was deleted')),
+  Effect.andThen(Console.log('\nfleet deleted')),
   Effect.provide(accountLayer()),
   Effect.provide(ApiLive),
   Effect.catchTag('ConfigError', () => Console.error('Set CLOUDFLARE_API_TOKEN to an API token.')),

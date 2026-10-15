@@ -48,7 +48,9 @@ export const migrateFleet = <E, R>(
               .query({ accountId, databaseId, sql })
               .pipe(
                 Effect.tapError((error) =>
-                  log(`✗ ${tenant.name} failed: ${error._tag === 'ApiError' ? error.message : error._tag}`),
+                  log(
+                    `✗ ${tenant.name}: ${error._tag === 'ApiError' ? error.message.replace(/: SQLITE_\w+$/, '') : error._tag}`,
+                  ),
                 ),
               );
             yield* log(`✓ ${tenant.name} migrated`);
@@ -62,7 +64,7 @@ export const migrateFleet = <E, R>(
                   .pipe(Effect.retry({ times: 3 }), Effect.andThen(log(`↩ ${tenant.name} restored`)), Effect.orDie),
         );
 
-      yield* log(`migrating, ${options.concurrency ?? 4} at a time: ${sql}`);
+      yield* log(`migrating ${options.concurrency ?? 4} at a time: ${sql}`);
       const migrated = yield* tenants.pipe(
         Stream.mapEffect(migrate, { concurrency: options.concurrency ?? 4 }),
         Stream.runCount,

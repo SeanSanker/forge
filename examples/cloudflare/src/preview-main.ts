@@ -16,13 +16,16 @@ import { preview } from './preview.js';
 // first account.
 
 const failing = process.argv.includes('--fail');
-const name = `forge-effect-preview-${Date.now().toString(36)}`;
+// --name pr-42 names the resources; a name unique to the run by default.
+const named = process.argv.indexOf('--name');
+const name = named === -1 ? `preview-${Date.now().toString(36)}` : process.argv[named + 1]!;
 
 const ApiLive = Api.layerConfig({ retry: true }).pipe(Layer.provide(FetchHttpClient.layer));
 
 const program = preview(name, { failing }).pipe(
   Effect.andThen(Console.log('\nnothing left behind')),
-  Effect.catchTag('ApiError', (error) => Console.log(`\nfailed with "${error.message}", and nothing left behind`)),
+  // Cloudflare's message, up to its details.
+  Effect.catchTag('ApiError', (error) => Console.log(`\nfailed: ${error.message.split(': ')[0]}\nnothing left behind`)),
   Effect.provide(accountLayer()),
   Effect.provide(ApiLive),
   Effect.catchTag('ConfigError', () => Console.error('Set CLOUDFLARE_API_TOKEN to an API token.')),
