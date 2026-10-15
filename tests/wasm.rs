@@ -291,7 +291,11 @@ fn forge_cli(args: &[&str]) -> std::process::Output {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    child.stdin.take().unwrap().write_all(SPEC.as_bytes()).unwrap();
+    // forge can exit before it reads its input, as when it is given no
+    // path, so a write that finds the pipe closed is not an error.
+    if let Err(err) = child.stdin.take().unwrap().write_all(SPEC.as_bytes()) {
+        assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe, "{err}");
+    }
     child.wait_with_output().unwrap()
 }
 
