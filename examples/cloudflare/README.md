@@ -97,6 +97,48 @@ const tour = Effect.scoped(
 );
 ```
 
+This matters most when making several resources at once, as for a preview
+environment in CI. `src/preview.ts` creates a KV namespace, a D1 database and
+a queue in parallel. If one create fails, or the job is cancelled, the others
+are interrupted and everything that was made is deleted. That includes a
+create that was still in flight: it finishes, since it can't be taken back
+once sent, and is deleted too. With `Promise.all`, such a create would finish
+after the failure, and nothing would delete it. `resource` there is
+`Effect.acquireRelease` of a create and a delete:
+
+```ts
+const stack =
+  yield *
+  Effect.all(
+    {
+      namespace: resource('KV namespace', api.kv.namespaces.create({ accountId, title: name }), (ns) =>
+        api.kv.namespaces.delete({ accountId, namespaceId: ns.id }),
+      ),
+      database: resource('D1 database', api.d1.create({ accountId, name }), (db) =>
+        api.d1.delete({ accountId, databaseId: db.uuid! }),
+      ),
+      queue: resource('queue', api.queues.create({ accountId, queueName: name }), (queue) =>
+        api.queues.delete({ accountId, queueId: queue.queueId! }),
+      ),
+    },
+    { concurrency: 'unbounded' },
+  );
+```
+
+Against the live API, with one more create that Cloudflare rejects
+(`pnpm preview --fail`):
+
+```
+ 0.00s  creating a KV namespace, a D1 database and a queue named forge-effect-preview-…, at once
+ 0.33s  ✗ couldn't create a queue named "Not Valid!"
+ 0.37s  ✓ created KV namespace
+ 0.59s  ✓ created D1 database
+ 1.28s  ✓ created queue
+ 1.54s  ✓ deleted queue
+ 2.02s  ✓ deleted D1 database
+ 2.17s  ✓ deleted KV namespace
+```
+
 ### Testing
 
 App code depends on `Api`, not on `fetch`, so a test provides a fake one.
@@ -148,9 +190,14 @@ CLOUDFLARE_API_TOKEN=... pnpm start
 # a page at a time, with each request printed. Needs Workers KV Storage Edit
 # and D1 Edit.
 CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... pnpm tour
+
+# Makes a KV namespace, a D1 database and a queue at once, uses them, and
+# deletes them. With --fail, one more create is rejected while the others
+# are in flight. Needs Workers KV Storage Edit, D1 Edit and Queues Edit.
+CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=... pnpm preview [--fail]
 ```
 
-For a throwaway account to run the tour in, Wrangler's `--temporary` flag makes
+For a throwaway account to run these in, Wrangler's `--temporary` flag makes
 one that lasts an hour, with no sign-up.
 
 ## How it's made
@@ -171,8 +218,8 @@ one that lasts an hour, with no sign-up.
   describes a single result without that wrapper, so the hook unwraps a result
   that isn't an array, keeping the envelope's `result_info` beside an object
   result. Lists keep their envelope, as the document describes them.
-- `src/report.ts` and `src/tour.ts` are the programs, and `test/` runs them
-  against fakes made with `Api.layerTest`.
+- `src/report.ts`, `src/tour.ts` and `src/preview.ts` are the programs, and
+  `test/` runs them against fakes made with `Api.layerTest`.
 
 ## Limits
 

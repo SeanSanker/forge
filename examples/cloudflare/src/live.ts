@@ -1,11 +1,12 @@
 // Node 24 has no Temporal yet; the SDK decodes date-times to it.
 import 'temporal-polyfill/global';
 
-import { Cause, Config, Console, Duration, Effect, Exit, Layer, Option, Stream } from 'effect';
+import { Cause, Console, Duration, Effect, Exit, Layer } from 'effect';
 import { FetchHttpClient, HttpClient, type HttpClientError, type HttpClientResponse } from 'effect/http';
 
 import { Api } from '../sdk/effect.js';
-import { Account, tour } from './tour.js';
+import { accountLayer } from './account.js';
+import { tour } from './tour.js';
 
 // The tour writes to the account: it makes a KV namespace and a D1
 // database, and deletes them at the end. The token comes from
@@ -50,23 +51,9 @@ const HttpLive = Layer.effect(
 
 const ApiLive = Api.layerConfig({ retry: true }).pipe(Layer.provide(HttpLive));
 
-const AccountLive = Layer.effect(
-  Account,
-  Effect.gen(function* () {
-    const configured = yield* Config.option(Config.String('CLOUDFLARE_ACCOUNT_ID'));
-    const id = Option.isSome(configured)
-      ? configured.value
-      : yield* (yield* Api).accounts.listAll().pipe(
-          Stream.take(1),
-          Stream.runCollect,
-          Effect.flatMap(([account]) =>
-            account === undefined ? Effect.die(new Error('the token has no account')) : Effect.succeed(account.id),
-          ),
-        );
-    accountId = id;
-    return Account.of({ id });
-  }),
-);
+const AccountLive = accountLayer((id) => {
+  accountId = id;
+});
 
 const program = Effect.timed(tour).pipe(
   Effect.flatMap(([took]) =>
