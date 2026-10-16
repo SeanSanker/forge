@@ -6,6 +6,9 @@
  *   `assets`, although the API takes it there, as Wrangler's
  *   `versions upload` sends it; the script upload's metadata has it, so it
  *   is copied from there.
+ * - Registering a workflow (`PUT .../workflows/{workflow_name}`), which
+ *   Wrangler does on deploy, is in the document but marked
+ *   `x-fern-ignore`, so no SDK has it; the mark is taken off.
  *
  *   node scripts/patches.ts IN OUT
  *
@@ -72,6 +75,15 @@ const versions = metadataProperties(multipart('/accounts/{account_id}/workers/sc
 if (versions['assets'] === undefined) {
   versions['assets'] = metadataProperties(script)['assets'];
   applied.push('assets on version uploads');
+}
+
+const workflow = paths['/accounts/{account_id}/workflows/{workflow_name}']?.['put'];
+if (workflow === undefined) {
+  throw new Error('PUT /accounts/{account_id}/workflows/{workflow_name} is missing');
+}
+if (workflow['x-fern-ignore'] === true) {
+  delete workflow['x-fern-ignore'];
+  applied.push('registering a workflow');
 }
 
 writeFileSync(output, JSON.stringify(doc));
