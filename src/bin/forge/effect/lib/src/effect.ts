@@ -759,7 +759,9 @@ function bodyOf(operation: Operation, request: Fields): unknown {
         set(fields, key, request[key]);
       }
     }
-    body = fields;
+    // A DELETE with no fields to send sends no body: an API can refuse an
+    // empty object, as Cloudflare's R2 notification delete does.
+    body = operation.method === 'DELETE' && Object.keys(fields).length === 0 ? undefined : fields;
   }
   if (body === undefined || operation.request === undefined) {
     return body;

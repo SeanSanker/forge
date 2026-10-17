@@ -143,3 +143,13 @@ test('nothing is sent until the stream is read', async () => {
   await Effect.runPromise(Stream.runDrain(stream));
   assert.equal(sent.length, 1);
 });
+
+test('a DELETE with only path parameters sends no body; with fields, it sends them', async () => {
+  const remove: Operation = { method: 'DELETE', route: '/buckets/{bucket}/queues/{queue}', body: 'flat' };
+  const bare = send(remove, { bucket: 'b', queue: 'q' }, new Response(null, { status: 204 }));
+  await Effect.runPromise(bare.effect);
+  assert.equal(bare.sent[0]!.body, undefined);
+  const withIds = send(remove, { bucket: 'b', queue: 'q', ruleIds: ['r'] }, new Response(null, { status: 204 }));
+  await Effect.runPromise(withIds.effect);
+  assert.equal(withIds.sent[0]!.body, '{"ruleIds":["r"]}');
+});

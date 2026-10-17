@@ -6,9 +6,11 @@
  *   `assets`, although the API takes it there, as Wrangler's
  *   `versions upload` sends it; the script upload's metadata has it, so it
  *   is copied from there.
- * - Registering a workflow (`PUT .../workflows/{workflow_name}`), which
- *   Wrangler does on deploy, is in the document but marked
- *   `x-fern-ignore`, so no SDK has it; the mark is taken off.
+ * - Operations the document has but marks `x-fern-ignore`, so no SDK has
+ *   them, that a deploy needs: registering a workflow (`PUT
+ *   .../workflows/{workflow_name}`), which Wrangler does on deploy, and
+ *   making a Secrets Store (`POST .../secrets_store/stores`). The mark is
+ *   taken off.
  *
  *   node scripts/patches.ts IN OUT
  *
@@ -77,13 +79,19 @@ if (versions['assets'] === undefined) {
   applied.push('assets on version uploads');
 }
 
-const workflow = paths['/accounts/{account_id}/workflows/{workflow_name}']?.['put'];
-if (workflow === undefined) {
-  throw new Error('PUT /accounts/{account_id}/workflows/{workflow_name} is missing');
-}
-if (workflow['x-fern-ignore'] === true) {
-  delete workflow['x-fern-ignore'];
-  applied.push('registering a workflow');
+const unignored: ReadonlyArray<readonly [string, string, string]> = [
+  ['/accounts/{account_id}/workflows/{workflow_name}', 'put', 'registering a workflow'],
+  ['/accounts/{account_id}/secrets_store/stores', 'post', 'making a Secrets Store'],
+];
+for (const [path, method, what] of unignored) {
+  const operation = paths[path]?.[method];
+  if (operation === undefined) {
+    throw new Error(`${method.toUpperCase()} ${path} is missing`);
+  }
+  if (operation['x-fern-ignore'] === true) {
+    delete operation['x-fern-ignore'];
+    applied.push(what);
+  }
 }
 
 writeFileSync(output, JSON.stringify(doc));
