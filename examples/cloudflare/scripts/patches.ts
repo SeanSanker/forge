@@ -8,9 +8,11 @@
  *   is copied from there.
  * - Operations the document has but marks `x-fern-ignore`, so no SDK has
  *   them, that a deploy needs: registering a workflow (`PUT
- *   .../workflows/{workflow_name}`), which Wrangler does on deploy, and
- *   making a Secrets Store (`POST .../secrets_store/stores`). The mark is
- *   taken off.
+ *   .../workflows/{workflow_name}`), which Wrangler does on deploy,
+ *   making a Secrets Store (`POST .../secrets_store/stores`), and a
+ *   Worker's event triggers (`GET`, `PUT` and `DELETE .../triggers/{script_name}`),
+ *   which start its workflows on Artifacts events, as Wrangler's deploy
+ *   replaces them. The mark is taken off.
  *
  *   node scripts/patches.ts IN OUT
  *
@@ -82,6 +84,9 @@ if (versions['assets'] === undefined) {
 const unignored: ReadonlyArray<readonly [string, string, string]> = [
   ['/accounts/{account_id}/workflows/{workflow_name}', 'put', 'registering a workflow'],
   ['/accounts/{account_id}/secrets_store/stores', 'post', 'making a Secrets Store'],
+  ['/accounts/{account_id}/triggers/{script_name}', 'get', "reading a Worker's event triggers"],
+  ['/accounts/{account_id}/triggers/{script_name}', 'put', "replacing a Worker's event triggers"],
+  ['/accounts/{account_id}/triggers/{script_name}', 'delete', "deleting a Worker's event triggers"],
 ];
 for (const [path, method, what] of unignored) {
   const operation = paths[path]?.[method];
