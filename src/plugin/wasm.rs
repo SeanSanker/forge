@@ -60,7 +60,7 @@ macro_rules! wit {
 
 wit!(
     r#"
-package forge:plugin@0.2.0;
+package forge:plugin@0.3.0;
 
 /// Read-only access to the forge a plugin runs on, which the host keeps.
 /// Each id is an index the host gave out. An id the host never gave out
@@ -189,7 +189,7 @@ interface forge {
     }
 
     variant scalar {
-        unknown, null, boolean, %string, number(number), date-time, date, bytes, binary,
+        unknown, null, boolean, %string, number(number), date-time, date, bytes, binary, uuid,
     }
 
     variant enum-value {
@@ -215,6 +215,8 @@ interface forge {
 
     record array-info {
         elem: type-id,
+        /// The `minItems`, or none if it is absent; zero is kept.
+        min-items: option<u64>,
         /// The `maxItems`, or none if the array has no limit.
         max-items: option<u64>,
     }
@@ -549,6 +551,7 @@ impl wit::Host for State {
                 Scalar::Null => wit::Scalar::Null,
                 Scalar::Boolean => wit::Scalar::Boolean,
                 Scalar::String => wit::Scalar::String,
+                Scalar::Uuid => wit::Scalar::Uuid,
                 Scalar::Number(number) => wit::Scalar::Number(match number {
                     Number::Int => wit::Number::Int,
                     Number::Int8 => wit::Number::Int8,
@@ -581,6 +584,7 @@ impl wit::Host for State {
             ),
             TypeData::Array(array) => wit::TypeInfo::Array(wit::ArrayInfo {
                 elem: array.elem.0,
+                min_items: array.min_items,
                 max_items: array.max_items,
             }),
             TypeData::Object(object) => wit::TypeInfo::Object(wit::ObjectInfo {

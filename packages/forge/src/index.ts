@@ -32,8 +32,8 @@
 // classes behind them stay private, so the bindings never show in
 // index.d.ts.
 
-import * as host from 'forge:plugin/forge@0.2.0';
-import type * as hostPlugin from 'forge:plugin/plugin@0.2.0';
+import * as host from 'forge:plugin/forge@0.3.0';
+import type * as hostPlugin from 'forge:plugin/plugin@0.3.0';
 
 // ---------------------------------------------------------------------------
 // The API.
@@ -294,7 +294,7 @@ export type Type = ScalarType | EnumType | ArrayType | ObjectType | UnionType | 
 export type ScalarType =
   | {
       readonly kind: 'scalar';
-      readonly scalar: 'unknown' | 'null' | 'boolean' | 'string' | 'date-time' | 'date' | 'bytes' | 'binary';
+      readonly scalar: 'unknown' | 'null' | 'boolean' | 'string' | 'date-time' | 'date' | 'bytes' | 'binary' | 'uuid';
     }
   | { readonly kind: 'scalar'; readonly scalar: 'number'; readonly number: NumberFormat };
 
@@ -322,6 +322,8 @@ export interface EnumType {
 export interface ArrayType {
   readonly kind: 'array';
   readonly elem: Type;
+  /** The fewest elements, `minItems`, or undefined if absent. An explicit zero is kept. */
+  readonly minItems: number | undefined;
   /** The most elements the array can have, `maxItems`, or undefined if it has no limit. */
   readonly maxItems: number | undefined;
 }
@@ -966,6 +968,7 @@ function makeType(forge: ForgeImpl, id: host.TypeId): Type {
       return { kind: 'enum', values: t.val.map((value) => value.val) };
     case 'array': {
       const { elem } = t.val;
+      const minItems = opt(t.val.minItems);
       const maxItems = opt(t.val.maxItems);
       return {
         kind: 'array',
@@ -973,6 +976,7 @@ function makeType(forge: ForgeImpl, id: host.TypeId): Type {
           return type(elem);
         },
         // A u64 comes as a bigint; no array's limit needs more than a number.
+        minItems: minItems === undefined ? undefined : Number(minItems),
         maxItems: maxItems === undefined ? undefined : Number(maxItems),
       };
     }

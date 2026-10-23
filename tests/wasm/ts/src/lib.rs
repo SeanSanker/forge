@@ -283,6 +283,7 @@ impl Forge {
                 host::Scalar::Null => Scalar::Null,
                 host::Scalar::Boolean => Scalar::Boolean,
                 host::Scalar::String => Scalar::String,
+                host::Scalar::Uuid => Scalar::Uuid,
                 host::Scalar::Number(number) => Scalar::Number(match number {
                     host::Number::Int => Number::Int,
                     host::Number::Int8 => Number::Int8,
@@ -313,6 +314,7 @@ impl Forge {
             ),
             host::TypeInfo::Array(array) => TypeData::Array(ArrayData {
                 elem: array.elem,
+                min_items: array.min_items,
                 max_items: array.max_items,
             }),
             host::TypeInfo::Object(object) => TypeData::Object(ObjectData {
@@ -445,6 +447,7 @@ enum EnumData {
 
 struct ArrayData {
     elem: u32,
+    min_items: Option<u64>,
     max_items: Option<u64>,
 }
 
@@ -821,6 +824,7 @@ pub enum Scalar {
     Null,
     Boolean,
     String,
+    Uuid,
     Number(Number),
     DateTime,
     Date,
@@ -929,6 +933,10 @@ impl<'f> Enum<'f> {
 impl<'f> Array<'f> {
     pub fn elem(self) -> Type<'f> {
         Type::new(self.forge, self.data.elem)
+    }
+
+    pub fn min_items(self) -> Option<u64> {
+        self.data.min_items
     }
 
     pub fn max_items(self) -> Option<u64> {

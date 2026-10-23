@@ -78,7 +78,7 @@ fn scalar_type(scalar: Scalar) -> Fragment {
         Scalar::Unknown => "unknown",
         Scalar::Null => "null",
         Scalar::Boolean => "boolean",
-        Scalar::String => "string",
+        Scalar::String | Scalar::Uuid => "string",
         Scalar::Number(Number::Int64) => "bigint",
         Scalar::Number(_) => "number",
         // The runtime's dates.ts says what a date is.

@@ -1,0 +1,168 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import test from 'node:test';
+import type { FernPageSchema } from 'astro-fern';
+import {
+  canonicalTerraformEndpoint,
+  getTerraformOperationData,
+  indexTerraformDocs,
+  renderTerraformDescriptions,
+  TERRAFORM_EXTENSION_NAME,
+  terraformDeclarationLabel,
+  terraformEndpointKeys,
+  terraformDocsSchema,
+  terraformRolesSummary,
+  type TerraformDeclaration,
+  type TerraformDocs,
+  withTerraformTarget,
+} from './terraform.ts';
+
+const resource: TerraformDeclaration = {
+  kind: 'resource',
+  name: 'cloudflare_widget',
+  roles: ['create'],
+  example: 'resource "cloudflare_widget" "example" {}\n',
+  required: [],
+  optional: [],
+  computed: [],
+};
+
+const dataSource: TerraformDeclaration = {
+  ...resource,
+  kind: 'data-source',
+  name: 'cloudflare_widget_data',
+  roles: ['read'],
+  example: 'data "cloudflare_widget" "example" {}\n',
+};
+
+function pageWith(declarations?: TerraformDeclaration[]): FernPageSchema {
+  return {
+    operation: {
+      extensions: declarations ? { [TERRAFORM_EXTENSION_NAME]: { declarations } } : {},
+    },
+    targets: [
+      { id: 'curl', code: 'curl example', syntax: 'bash' },
+      { id: 'terraform', code: null, syntax: 'hcl' },
+    ],
+  } as FernPageSchema;
+}
+
+test('canonical Terraform endpoints ignore parameter naming differences', () => {
+  assert.equal(
+    canonicalTerraformEndpoint('GET', '/{account_or_zone}/{account_or_zone_id}/widgets'),
+    'get /{}/{}/widgets',
+  );
+});
+
+test('SDK endpoints match both concrete and merged scope paths', () => {
+  assert.deepEqual(terraformEndpointKeys('post /{accounts_or_zones}/{account_or_zone_id}/rules'), [
+    'post /accounts/{}/rules',
+    'post /zones/{}/rules',
+    'post /{}/{}/rules',
+  ]);
+  assert.deepEqual(terraformEndpointKeys('get /accounts/{account_id}/dns_settings'), [
+    'get /accounts/{}/dns_settings',
+    'get /{}/{}/dns_settings',
+  ]);
+  assert.deepEqual(terraformEndpointKeys('get /user/tokens'), ['get /user/tokens']);
+});
+
+test('indexTerraformDocs merges roles across endpoint variants and orders declarations', () => {
+  const base = { required: [], optional: [], computed: [] };
+  const docs: TerraformDocs = {
+    format: 2,
+    declarations: {
+      'resource:cloudflare_widget': { kind: 'resource', name: 'cloudflare_widget', ...base },
+      'data-source:cloudflare_widget': { kind: 'data-source', name: 'cloudflare_widget', ...base },
+    },
+    endpoints: {
+      'get /accounts/{account_id}/widgets/{id}': [
+        { declaration: 'data-source:cloudflare_widget', roles: ['read'] },
+        { declaration: 'resource:cloudflare_widget', roles: ['read', 'import'] },
+      ],
+      'get /{accounts_or_zones}/{account_or_zone_id}/widgets/{id}': [
+        { declaration: 'resource:cloudflare_widget', roles: ['read'] },
+      ],
+    },
+  };
+  const index = indexTerraformDocs(docs);
+  const merged = index.get('get /accounts/{}/widgets/{}');
+  assert.deepEqual(
+    merged?.map(({ kind, roles }) => [kind, roles]),
+    [
+      ['resource', ['read', 'import']],
+      ['data-source', ['read']],
+    ],
+  );
+  assert.deepEqual(
+    index.get('get /zones/{}/widgets/{}')?.map(({ kind }) => kind),
+    ['resource'],
+  );
+});
+
+test('renderTerraformDescriptions renders every description once and keeps the Markdown', () => {
+  const field = { name: 'account_id', type: 'String', description: 'Cloudflare account ID' };
+  const docs: TerraformDocs = {
+    format: 2,
+    declarations: {
+      'resource:cloudflare_widget': {
+        kind: 'resource',
+        name: 'cloudflare_widget',
+        description: 'Accepted Permissions\n\n- `Widget Write`',
+        required: [field],
+        optional: [{ name: 'settings', type: 'Attributes', children: [{ ...field, name: 'owner' }] }],
+        computed: [{ name: 'id', type: 'String' }],
+      },
+    },
+    endpoints: {},
+  };
+  const rendered: string[] = [];
+  const result = renderTerraformDescriptions(docs, (markdown) => {
+    rendered.push(markdown);
+    return `<p>${markdown}</p>`;
+  });
+  const widget = result.declarations['resource:cloudflare_widget']!;
+  assert.equal(widget.descriptionHtml, '<p>Accepted Permissions\n\n- `Widget Write`</p>');
+  assert.equal(widget.description, 'Accepted Permissions\n\n- `Widget Write`');
+  assert.equal(widget.required[0]?.descriptionHtml, '<p>Cloudflare account ID</p>');
+  assert.equal(widget.optional[0]?.children?.[0]?.descriptionHtml, '<p>Cloudflare account ID</p>');
+  assert.equal(widget.computed[0]?.descriptionHtml, undefined);
+  assert.deepEqual(rendered, ['Accepted Permissions\n\n- `Widget Write`', 'Cloudflare account ID']);
+  // The input is left as it was: rendering adds HTML to a copy.
+  assert.ok(!('descriptionHtml' in (docs.declarations['resource:cloudflare_widget']?.required[0] ?? {})));
+});
+
+test('Terraform operation data remains namespaced on the operation', () => {
+  assert.deepEqual(getTerraformOperationData(pageWith([resource]).operation)?.declarations, [resource]);
+  assert.equal(terraformDeclarationLabel(resource), 'resource cloudflare_widget');
+  assert.equal(terraformDeclarationLabel(dataSource), 'data cloudflare_widget_data');
+  assert.equal(
+    terraformRolesSummary({ ...resource, roles: ['read', 'import'] }),
+    'Called by this resource to read and import.',
+  );
+  assert.equal(terraformRolesSummary(dataSource), 'Called by this data source to read.');
+});
+
+test('withTerraformTarget preserves all declaration examples for agent Markdown', () => {
+  const page = pageWith([resource, dataSource]);
+  const decorated = withTerraformTarget(page);
+  const code = decorated.targets.find((target) => target.id === 'terraform')?.code;
+  assert.match(code ?? '', /# resource cloudflare_widget/);
+  assert.match(code ?? '', /# data cloudflare_widget_data/);
+  assert.equal(page.targets.find((target) => target.id === 'terraform')?.code, null);
+});
+
+test('the generated index links every CRUD operation of a resource', async () => {
+  const source = await readFile(new URL('./generated/terraform-docs.json', import.meta.url), 'utf8');
+  const index = indexTerraformDocs(terraformDocsSchema.parse(JSON.parse(source)));
+  const roles = (key: string) =>
+    index.get(key)?.find(({ kind, name }) => kind === 'resource' && name === 'cloudflare_dns_record')?.roles;
+  assert.deepEqual(roles('post /zones/{}/dns_records'), ['create']);
+  assert.deepEqual(roles('get /zones/{}/dns_records/{}'), ['read', 'import']);
+  assert.deepEqual(roles('put /zones/{}/dns_records/{}'), ['update']);
+  assert.deepEqual(roles('delete /zones/{}/dns_records/{}'), ['delete']);
+  // Scope-polymorphic SDK paths resolve to Forge's merged `/{account_or_zone}/…` path.
+  assert.ok(
+    index.get('post /{}/{}/firewall/access_rules/rules')?.some(({ name }) => name === 'cloudflare_access_rule'),
+  );
+});

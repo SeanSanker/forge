@@ -1537,6 +1537,7 @@ impl<'d> Builder<'d> {
             SchemaType::String => match schema.format {
                 Format::DateTime => Scalar::DateTime,
                 Format::Date => Scalar::Date,
+                Format::Uuid => Scalar::Uuid,
                 Format::Byte => Scalar::Bytes,
                 Format::Binary => Scalar::Binary,
                 _ if schema.content_encoding == ContentEncoding::Base64 => Scalar::Bytes,
@@ -1571,6 +1572,7 @@ impl<'d> Builder<'d> {
         };
         self.push(TypeData::Array(ArrayData {
             elem,
+            min_items: schema.min_items,
             max_items: schema.max_items,
         }))
     }

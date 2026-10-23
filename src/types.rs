@@ -82,8 +82,10 @@ pub enum Scalar {
     Unknown,
     Null,
     Boolean,
-    /// A string, with no format or one not listed here, such as `uuid`.
+    /// A string, with no format or one not listed here, such as `uri`.
     String,
+    /// A string with format `uuid`.
+    Uuid,
     /// An integer or number, of the size its format gives.
     Number(Number),
     /// A string with format `date-time`.
@@ -249,6 +251,15 @@ impl<'f> Array<'f> {
     /// Returns the type of the elements.
     pub fn elem(self) -> Type<'f> {
         Type::new(self.forge, self.data.elem)
+    }
+
+    /// Returns the fewest elements the array can have: its `minItems`, or
+    /// `None` if it is absent. An explicit zero is `Some(0)`.
+    ///
+    /// Reading and reference handling follow [`Array::max_items`]. Forge
+    /// preserves the bounds without checking whether they are consistent.
+    pub fn min_items(self) -> Option<u64> {
+        self.data.min_items
     }
 
     /// Returns the most elements the array can have, or `None` if it has
@@ -582,6 +593,8 @@ pub(crate) enum EnumData {
 #[derive(Clone, Copy)]
 pub(crate) struct ArrayData {
     pub(crate) elem: TypeId,
+    /// The `minItems`, if the schema specifies it.
+    pub(crate) min_items: Option<u64>,
     /// The `maxItems`, if the array has a limit.
     pub(crate) max_items: Option<u64>,
 }

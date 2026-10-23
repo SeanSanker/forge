@@ -164,7 +164,15 @@ fn ty(o: &mut String, depth: usize, method: Option<Method<'_>>, ty: Type<'_>) {
         Type::Scalar(scalar) => line(o, depth, format_args!("{scalar:?}")),
         Type::Enum(values) => line(o, depth, format_args!("enum {:?}", values.values().collect::<Vec<_>>())),
         Type::Array(array) => {
-            line(o, depth, format_args!("array max items {:?}", array.max_items()));
+            line(
+                o,
+                depth,
+                format_args!(
+                    "array min items {:?} max items {:?}",
+                    array.min_items(),
+                    array.max_items()
+                ),
+            );
             self::ty(o, depth + 1, method, array.elem());
         }
         Type::Object(object) => self::object(o, depth, method, object),

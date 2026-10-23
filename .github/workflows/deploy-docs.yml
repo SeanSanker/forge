@@ -34,13 +34,11 @@ jobs:
 
       - uses: ./.github/actions/setup-workspace
 
-      - name: Build
-        run: pnpm --filter docs-site build
+      # `cf deploy` builds the site (`astro build`) and deploys it. `run` is
+      # needed because `pnpm deploy` is a built-in pnpm command.
+      - name: Build and deploy
+        run: pnpm --filter cloudflare-api-site run deploy
         env:
           FORGE_OPENAPI_RELEASE: ${{ github.event.release.tag_name || inputs.openapi_release || '' }}
-
-      - name: Deploy
-        run: pnpm --dir packages/docs-site exec wrangler deploy
-        env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

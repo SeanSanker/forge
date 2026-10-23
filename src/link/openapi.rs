@@ -368,6 +368,8 @@ pub(super) struct SchemaObject {
     pub(super) unevaluated_properties: Schema,
     pub(super) required: Span<Str>,
     pub(super) items: Option<Schema>,
+    /// The `minItems`, or `None` without it.
+    pub(super) min_items: Option<u64>,
     /// The `maxItems`, or `None` without it.
     pub(super) max_items: Option<u64>,
     /// Whether the schema has `prefixItems`: it is a tuple, which is not
@@ -428,6 +430,7 @@ pub(super) enum SchemaType {
 pub(super) enum Format {
     DateTime,
     Date,
+    Uuid,
     Byte,
     Binary,
     Int8,
@@ -1602,6 +1605,7 @@ keys! {
         UnevaluatedProperties = "unevaluatedProperties",
         Required = "required",
         Items = "items",
+        MinItems = "minItems",
         MaxItems = "maxItems",
         PrefixItems = "prefixItems",
         AllOf = "allOf",
@@ -1654,6 +1658,7 @@ impl ReadObject for SchemaObject {
                     schema.required = map.next_value_seed(SeqOfStrsSeed(doc))?;
                 }
                 SchemaKey::Items => schema.items = map.next_value_seed(seed::<Nullable<Schema>>(doc))?,
+                SchemaKey::MinItems => schema.min_items = Some(map.next_value::<Count>()?.0),
                 SchemaKey::MaxItems => schema.max_items = Some(map.next_value::<Count>()?.0),
                 SchemaKey::PrefixItems => schema.prefix_items = present(&mut map)?,
                 SchemaKey::AllOf => schema.all_of = map.next_value_seed(seed::<Seq<Schema>>(doc))?,

@@ -1,6 +1,8 @@
 use forge::{Number, Scalar};
 
-use crate::common::{field, object, parse, responding_with, response_type, scalar};
+use crate::common::{
+    field, model_of, object, parse, responding_with, responding_with_schemas, response_type, scalar, union,
+};
 
 #[test]
 fn primitive_types() {
@@ -67,11 +69,68 @@ fn string_formats() {
         (r#"{"type": "string", "format": "date"}"#, Scalar::Date),
         (r#"{"type": "string", "format": "byte"}"#, Scalar::Bytes),
         (r#"{"type": "string", "format": "binary"}"#, Scalar::Binary),
-        (r#"{"type": "string", "format": "uuid"}"#, Scalar::String),
+        (r#"{"type": "string", "format": "uuid"}"#, Scalar::Uuid),
         (r#"{"type": "string", "format": "uri"}"#, Scalar::String),
     ] {
         let forge = parse(&responding_with(schema));
 
+        assert_eq!(scalar(response_type(&forge, "a.get")), want, "{schema}");
+    }
+}
+
+#[test]
+fn uuid_references_and_plain_strings_keep_their_own_scalar_types() {
+    let forge = parse(&responding_with_schemas(
+        r##"{"type":"object","properties":{
+          "id":{"$ref":"#/components/schemas/ID"},
+          "plain":{"type":"string"},
+          "empty":{"type":"string","format":""},
+          "custom":{"type":"string","format":"custom-ID"},
+          "id_again":{"type":"string","format":"uuid"}
+        }}"##,
+        r#"{"ID":{"type":"string","format":"uuid"}}"#,
+    ));
+    let object = object(response_type(&forge, "a.get"));
+    assert_eq!(scalar(model_of(field(object, "id").ty()).ty()), Scalar::Uuid);
+    assert_eq!(scalar(field(object, "id_again").ty()), Scalar::Uuid);
+    for name in ["plain", "empty", "custom"] {
+        assert_eq!(scalar(field(object, name).ty()), Scalar::String, "{name}");
+    }
+}
+
+#[test]
+fn union_deduplication_keeps_uuids_distinct_from_plain_strings() {
+    let forge = parse(&responding_with(
+        r#"{"anyOf":[
+          {"type":"string","format":"uuid"},
+          {"type":"string"},
+          {"type":"string","format":"uuid"},
+          {"type":"string","format":"uri"}
+        ]}"#,
+    ));
+    let members: Vec<_> = union(response_type(&forge, "a.get")).members().map(scalar).collect();
+    assert_eq!(members, [Scalar::Uuid, Scalar::String]);
+}
+
+#[test]
+fn uuid_format_only_classifies_strings_and_survives_nullability() {
+    for schema in [
+        r#"{"type":"string","format":"uuid","nullable":true}"#,
+        r#"{"type":["string","null"],"format":"uuid"}"#,
+    ] {
+        let forge = parse(&responding_with(schema));
+        let members: Vec<_> = union(response_type(&forge, "a.get")).members().map(scalar).collect();
+        assert_eq!(members, [Scalar::Uuid, Scalar::Null], "{schema}");
+    }
+    for (schema, want) in [
+        (r#"{"type":"integer","format":"uuid"}"#, Scalar::Number(Number::Int)),
+        (r#"{"type":"boolean","format":"uuid"}"#, Scalar::Boolean),
+        (
+            r#"{"type":"string","format":"uuid","contentEncoding":"base64"}"#,
+            Scalar::Uuid,
+        ),
+    ] {
+        let forge = parse(&responding_with(schema));
         assert_eq!(scalar(response_type(&forge, "a.get")), want, "{schema}");
     }
 }
