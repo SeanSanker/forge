@@ -259,6 +259,11 @@ export interface Field {
   /** The property's name as it is sent. */
   readonly wireName: string;
   readonly name: Name;
+  /**
+   * Whether an extension gives the name, rather than the wire name:
+   * `x-fern-property-name` or `x-fern-parameter-name`.
+   */
+  readonly named: boolean;
   readonly required: boolean;
   readonly description: string;
   readonly deprecated: boolean;
@@ -923,6 +928,7 @@ class ModelImpl implements Model {
 class FieldImpl implements Field {
   readonly wireName: string;
   readonly name: Name;
+  readonly named: boolean;
   readonly required: boolean;
   readonly description: string;
   readonly deprecated: boolean;
@@ -940,6 +946,7 @@ class FieldImpl implements Field {
   ) {
     this.wireName = info.wireName;
     this.name = new NameImpl(info.name);
+    this.named = info.named;
     this.required = info.required;
     this.description = info.description;
     this.deprecated = info.deprecated;

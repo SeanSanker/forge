@@ -226,9 +226,10 @@ fn field(o: &mut String, depth: usize, method: Option<Method<'_>>, field: Field<
         o,
         depth,
         format_args!(
-            "field {:?} {:?} required {} deprecated {} read only {} sensitive {} default {:?} location {location:?} description {:?}",
+            "field {:?} {:?} named {} required {} deprecated {} read only {} sensitive {} default {:?} location {location:?} description {:?}",
             field.wire_name(),
             name(field.name()),
+            field.is_named(),
             field.is_required(),
             field.is_deprecated(),
             field.is_read_only(),

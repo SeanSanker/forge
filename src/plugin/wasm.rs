@@ -201,6 +201,9 @@ interface forge {
     record field-info {
         wire-name: string,
         name: name,
+        /// Whether an extension, such as `x-fern-property-name` or
+        /// `x-fern-parameter-name`, gives the name, rather than the wire name.
+        named: bool,
         required: bool,
         ty: type-id,
         description: string,
@@ -595,6 +598,7 @@ impl wit::Host for State {
                     .map(|field| wit::FieldInfo {
                         wire_name: s(field.wire_name),
                         name: words(&forge.names[field.name.index()]),
+                        named: field.named,
                         required: field.required,
                         ty: field.ty.0,
                         description: s(field.description),

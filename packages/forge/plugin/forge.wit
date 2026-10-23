@@ -140,6 +140,9 @@ interface forge {
     record field-info {
         wire-name: string,
         name: name,
+        /// Whether an extension, such as `x-fern-property-name` or
+        /// `x-fern-parameter-name`, gives the name, rather than the wire name.
+        named: bool,
         required: bool,
         ty: type-id,
         description: string,

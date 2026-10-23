@@ -324,6 +324,7 @@ impl Forge {
                     .map(|f| FieldData {
                         wire_name: f.wire_name,
                         name: Name::from_words(f.name),
+                        named: f.named,
                         required: f.required,
                         ty: f.ty,
                         description: f.description,
@@ -459,6 +460,7 @@ struct ObjectData {
 struct FieldData {
     wire_name: String,
     name: Name,
+    named: bool,
     required: bool,
     ty: u32,
     description: String,
@@ -967,6 +969,10 @@ impl<'f> Field<'f> {
 
     pub fn name(self) -> &'f Name {
         &self.data.name
+    }
+
+    pub fn is_named(self) -> bool {
+        self.data.named
     }
 
     pub fn is_required(self) -> bool {

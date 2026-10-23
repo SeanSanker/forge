@@ -178,7 +178,7 @@ const FEATURES: &str = r##"{
   "components": {"schemas": {
     "Pet": {"type": "object", "properties": {
       "id": {"type": "string", "readOnly": true},
-      "password": {"type": "string", "x-sensitive": true},
+      "password": {"type": "string", "x-sensitive": true, "x-fern-property-name": "secret"},
       "tags": {"type": "array", "items": {"type": "string"}, "minItems": 0, "maxItems": 3},
       "dataset_scope": {"oneOf": [
         {"type": "object", "properties": {"type": {"const": "default"}}, "required": ["type"], "additionalProperties": false},
@@ -223,6 +223,7 @@ fn reads_all_of_the_forge() {
                 "headers",
                 "read only true",
                 "sensitive true",
+                "named true",
                 "default Some(",
                 "min items Some(0) max items Some(3)",
                 "min items Some(1) max items Some(50)",
